@@ -878,6 +878,29 @@ class StackingMonitorDialog(QDialog):
         ):
             return
 
+        # Integration emits "Integration complete" when the tile loop ends,
+        # then later "✅ Saved integrated image…". The second message must not
+        # open a fresh 0s success row — refresh the last matching Integration
+        # note instead (elapsed stays on the real work).
+        if (
+            status in (_ST_OK, _ST_FAIL, _ST_WARN)
+            and op == "Integration"
+            and op not in self._open
+        ):
+            if status == _ST_OK and note:
+                for i in range(len(self._rows) - 1, -1, -1):
+                    row = self._rows[i]
+                    if row.operation != "Integration":
+                        continue
+                    if group and row.group and group != row.group:
+                        continue
+                    row.note = note
+                    if group and not row.group:
+                        row.group = group
+                    self._refresh_row(i)
+                    break
+            return
+
         # ── continuing a running row ──────────────────────────────────────
         if status == _ST_RUNNING and op in self._open:
             idx = self._open[op]

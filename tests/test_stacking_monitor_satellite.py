@@ -178,6 +178,24 @@ class MonitorDrizzleRowSequenceTests(unittest.TestCase):
         self.assertIn("Integration", self.dlg._open)
         self.assertIn("Drizzle for", self.dlg._rows[-1].note)
 
+    def test_saved_after_integration_complete_does_not_spawn_0s_row(self):
+        self.dlg._on_message(
+            "📊 Stacking group 'H - 600.0s (9576x6388) [G100]' with Winsorized"
+        )
+        self.dlg._on_message(
+            "Integration complete for group 'H - 600.0s (9576x6388) [G100]'."
+        )
+        self.dlg._on_message(
+            "✅ Saved integrated image (with rejection layers) for "
+            "'H - 600.0s (9576x6388) [G100]': /tmp/MasterLight_H.fit"
+        )
+        self.assertEqual(
+            self._ops(),
+            [("Integration", "H - 600.0s (9576x6388) [G100]", "success")],
+        )
+        self.assertIn("Saved integrated image", self.dlg._rows[-1].note)
+        self.assertNotIn("Integration", self.dlg._open)
+
     def test_next_set_does_not_show_two_running_rows(self):
         self.dlg._on_message(
             "📐 Drizzle for 'S - 600.0s (9576x6388) [G100]' at 1.0× (drop=0.7) using 52 frame(s)."
