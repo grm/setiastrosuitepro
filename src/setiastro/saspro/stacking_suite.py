@@ -250,6 +250,7 @@ class _FramePrefetcher:
         self._futs = {}
         self._lock = threading.Lock()
         self._next = 0
+        self._closed = False
         for _ in range(self._lookahead):
             self._submit_next()
 
@@ -271,7 +272,15 @@ class _FramePrefetcher:
         return fut.result() if fut is not None else self._loader(path)
 
     def close(self):
-        self._ex.shutdown(wait=True, cancel_futures=True)
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._ex.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._ex.shutdown(wait=False)
+        except Exception:
+            pass
         self._futs.clear()
 
 # --- Rejection-backend correctness gate -----------------------------------
@@ -424,6 +433,178 @@ def _cal_out_name(light_file: str, calibrated_dir: str) -> str:
     src_dir = os.path.dirname(os.path.abspath(light_file))
     dir_hash = hashlib.md5(src_dir.encode()).hexdigest()[:6]
     return os.path.join(calibrated_dir, f"{dir_hash}_{root}_c.fit")
+
+
+def record_rejection_pixels(bucket, x0, y0, mask) -> None:
+    """Remember rejected pixels as coordinates, not a copy of the whole tile.
+
+    A full-width band on a 9576-wide sensor is ~150 KB of bools even when only
+    a handful of pixels were rejected. Drizzle asks for one of those copies
+    per band per frame, which is tens of GB on an ASI6200 mosaic. Coordinates
+    are 8 bytes per rejected pixel and expand back to a mask one frame at a
+    time. The record is ``("px", ys_uint32, xs_uint32)`` in absolute pixels.
+    """
+    m = np.asarray(mask, dtype=np.bool_)
+    if m.ndim != 2:
+        m = np.squeeze(m)
+    if getattr(m, "ndim", 0) != 2 or m.size == 0 or not np.any(m):
+        return
+    yy, xx = np.nonzero(m)
+    bucket.append((
+        "px",
+        np.ascontiguousarray(yy.astype(np.int64, copy=False) + int(y0), dtype=np.uint32),
+        np.ascontiguousarray(xx.astype(np.int64, copy=False) + int(x0), dtype=np.uint32),
+    ))
+
+
+def paint_rejection_items(items, dest: np.ndarray) -> int:
+    """Set ``dest`` (2-D bool) True on every rejected pixel.
+
+    Accepts compact ``("px", ys, xs)`` records, legacy ``(x0, y0, mask)``
+    tiles, and legacy ``(x, y)`` points. Returns how many coordinates were
+    visited, not how many unique pixels changed.
+    """
+    if dest is None or getattr(dest, "ndim", 0) != 2:
+        return 0
+    height, width = dest.shape
+    painted = 0
+    for it in items or []:
+        if isinstance(it, tuple) and len(it) == 3 and it[0] == "px":
+            ys = np.asarray(it[1])
+            xs = np.asarray(it[2])
+            if ys.size == 0:
+                continue
+            ok = (ys < height) & (xs < width)
+            if np.any(ok):
+                dest[ys[ok], xs[ok]] = True
+                painted += int(np.count_nonzero(ok))
+            continue
+        if isinstance(it, (tuple, list)) and len(it) == 3:
+            try:
+                x0, y0, mask = it
+                x0i, y0i = int(x0), int(y0)
+            except Exception:
+                continue
+            mm = np.asarray(mask, dtype=np.bool_)
+            if mm.ndim != 2:
+                mm = np.squeeze(mm)
+            if mm.ndim != 2 or mm.size == 0:
+                continue
+            th, tw = mm.shape
+            x1 = min(width, x0i + tw)
+            y1 = min(height, y0i + th)
+            if x0i >= width or y0i >= height or x1 <= x0i or y1 <= y0i:
+                continue
+            sub = dest[y0i:y1, x0i:x1]
+            tile = mm[: y1 - y0i, : x1 - x0i]
+            sub |= tile
+            painted += int(np.count_nonzero(tile))
+            continue
+        if isinstance(it, (tuple, list)) and len(it) == 2:
+            try:
+                x, y = int(it[0]), int(it[1])
+            except Exception:
+                continue
+            if 0 <= y < height and 0 <= x < width:
+                dest[y, x] = True
+                painted += 1
+    return painted
+
+
+# Light-frame copies the pipeline writes under the stacking directory.
+# Raw lights, masters, darks and flats are never in this list.
+_LIGHT_INTERMEDIATE_DIRS = (
+    "Calibrated",
+    "Normalized_Images",
+    "Aligned_Images",
+    "Prepared_Registered",
+)
+
+
+def _path_is_inside(path: str, root: str) -> bool:
+    """True when ``path`` is a real file strictly inside ``root``.
+
+    Both sides are realpath'd, so a symlink that points out of the stacking
+    directory does not count as inside it.
+    """
+    try:
+        path_r = os.path.normcase(os.path.realpath(path))
+        root_r = os.path.normcase(os.path.realpath(root))
+    except Exception:
+        return False
+    if path_r == root_r or not os.path.isfile(path_r):
+        return False
+    try:
+        return os.path.commonpath([path_r, root_r]) == root_r
+    except ValueError:
+        return False
+
+
+def light_intermediate_files(stacking_dir: str, candidates) -> list[str]:
+    """Files among ``candidates`` that are pipeline copies of light frames.
+
+    Only regular files under Calibrated, Normalized_Images, Aligned_Images
+    or Prepared_Registered. Sidecars that belong to those frames (satellite
+    mask, CFA sparse sibling) are included when they sit in the same folder.
+    """
+    if not stacking_dir or not os.path.isdir(stacking_dir):
+        return []
+    roots = []
+    for name in _LIGHT_INTERMEDIATE_DIRS:
+        folder = os.path.join(stacking_dir, name)
+        if os.path.isdir(folder):
+            roots.append(os.path.realpath(folder))
+    if not roots:
+        return []
+
+    seen = set()
+    out = []
+
+    def _consider(path):
+        if not path or not isinstance(path, str):
+            return
+        try:
+            real = os.path.realpath(path)
+        except Exception:
+            return
+        key = os.path.normcase(real)
+        if key in seen or not os.path.isfile(real):
+            return
+        if not any(_path_is_inside(real, root) for root in roots):
+            return
+        seen.add(key)
+        out.append(real)
+
+    for raw in candidates or []:
+        _consider(raw)
+        if not raw or not isinstance(raw, str):
+            continue
+        base, ext = os.path.splitext(raw)
+        _consider(base + "_satmask.npy")
+        # Sparse CFA sibling of a normalized frame: stem_n.fit -> stem_n_cfa.fit
+        if base.endswith("_n") and not base.endswith("_cfa"):
+            _consider(base + "_cfa" + ext)
+    return out
+
+
+def prune_empty_intermediate_dirs(stacking_dir: str) -> None:
+    """Remove emptied intermediate folders, leaving the stacking directory."""
+    if not stacking_dir or not os.path.isdir(stacking_dir):
+        return
+    stacking_real = os.path.normcase(os.path.realpath(stacking_dir))
+    for name in _LIGHT_INTERMEDIATE_DIRS:
+        root = os.path.join(stacking_dir, name)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _dirnames, _filenames in os.walk(root, topdown=False):
+            real = os.path.normcase(os.path.realpath(dirpath))
+            if real == stacking_real:
+                continue
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+            except OSError:
+                pass
 
 
 def _star_count_ecc_size(preview, **kwargs):
@@ -2982,6 +3163,20 @@ def build_rejection_layers(
 
         # Detect format by peeking at first item
         first = items[0]
+
+        # Compact coordinate records from record_rejection_pixels.
+        if isinstance(first, tuple) and len(first) == 3 and first[0] == "px":
+            for it in items:
+                if not (isinstance(it, tuple) and len(it) == 3 and it[0] == "px"):
+                    continue
+                ys = np.asarray(it[1])
+                xs = np.asarray(it[2])
+                if ys.size == 0:
+                    continue
+                ok = (ys < ref_H) & (xs < ref_W)
+                if np.any(ok):
+                    np.add.at(rej_cnt, (ys[ok], xs[ok]), np.uint32(1))
+            continue
 
         # ---- NEW tile-mask format ----
         if isinstance(first, (tuple, list)) and len(first) == 3:
@@ -9865,6 +10060,23 @@ class StackingSuiteDialog(QDialog):
         )
         fl_general.addRow(self.low_ram_safe_mode_cb)
 
+        self.delete_light_intermediates_cb = QCheckBox(
+            self.tr("Delete light intermediates after each set")
+        )
+        self.delete_light_intermediates_cb.setToolTip(self.tr(
+            "After a light set's masters are saved — and after drizzle or "
+            "MFDeconv, if either ran — delete that set's copies in "
+            "Calibrated, Normalized_Images, Aligned_Images and "
+            "Prepared_Registered.\n"
+            "Raw lights, masters, darks, flats, rejection maps and the "
+            "transform file are kept.\n"
+            "Off by default. A failed or cancelled set keeps its files."
+        ))
+        self.delete_light_intermediates_cb.setChecked(
+            self.settings.value("stacking/delete_light_intermediates", False, type=bool)
+        )
+        fl_general.addRow(self.delete_light_intermediates_cb)
+
         self.completion_sound_cb = QCheckBox(self.tr("Play a sound when stacking finishes"))
         self.completion_sound_cb.setToolTip(self.tr(
             "Chime when the completion summary appears, so a long stack you\n"
@@ -11092,6 +11304,10 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_width",          self.chunk_width)
         self.settings.setValue("stacking/low_ram_safe_mode",
                                bool(self.low_ram_safe_mode_cb.isChecked()))
+        self.settings.setValue(
+            "stacking/delete_light_intermediates",
+            bool(self.delete_light_intermediates_cb.isChecked()),
+        )
         self.settings.setValue("stacking/completion_sound",
                                bool(self.completion_sound_cb.isChecked()))
         self.settings.setValue("stacking/completion_sound_file",
@@ -25917,6 +26133,7 @@ class StackingSuiteDialog(QDialog):
             self._reg_current_set = _set_name
             self._reg_current_set_slug = self._slugify_set(_set_name)
             self.light_files = {g: list(p) for g, p in _set_groups.items()}
+            self._remember_light_intermediate_sources(self.light_files)
             _cfg = self.reg_sets.get(_set_name, {"reference": None, "locked": False})
             if _cfg.get("locked") and _cfg.get("reference"):
                 self.reference_frame = os.path.normpath(_cfg["reference"])
@@ -30027,6 +30244,7 @@ class StackingSuiteDialog(QDialog):
         # click of Integrate.
         self._drizzle_master_paths = []
         self._drizzle_crop_paths   = []
+        self._park_fullframe_rejection_maps(prepass)
 
         for group_key, file_list in grouped_files.items():
             if not drizzle_enabled_global:
@@ -30088,6 +30306,7 @@ class StackingSuiteDialog(QDialog):
 
             if ok:
                 group_integration_data[group_key]["drizzled"] = True
+            self._drop_group_pixel_rejections(group_integration_data, group_key, prepass)
 
         for group_key, info in group_integration_data.items():
             n_frames_group = info["n_frames"]
@@ -30231,9 +30450,11 @@ class StackingSuiteDialog(QDialog):
                         prepass=prepass,
                         status_cb=log,
                     )
+                    self._purge_finished_light_intermediates()
                     return result
                 except Exception as e:
                     log(f"⚠️ Post-MF finalize failed: {e}")
+                    self._light_intermediate_sources = []
                     self._set_registration_busy(False)
                     return
 
@@ -30266,8 +30487,10 @@ class StackingSuiteDialog(QDialog):
             # Registration-set queue: advance once this set's MF phase is done.
             if getattr(self, "_reg_queue", None):
                 if getattr(self, "_mf_cancelled", False) or getattr(self, "_mf_failures", None):
+                    self._light_intermediate_sources = []
                     self._reg_queue_abort("MFDeconv did not complete for a set")
                 else:
+                    self._purge_finished_light_intermediates()
                     if more_sets:
                         set_name = getattr(self, "_reg_current_set", "") or ""
                         n_left = len(self._reg_queue) - self._reg_queue_pos - 1
@@ -31367,6 +31590,14 @@ class StackingSuiteDialog(QDialog):
                 self._cfa_for_this_run = None
                 QApplication.processEvents()
             return
+
+        if ok:
+            # Masters (and drizzle, if it ran) are on disk. MFDeconv, when
+            # requested, still needs the aligned frames and purges on its
+            # own way out — that path returned above.
+            self._purge_finished_light_intermediates()
+        else:
+            self._light_intermediate_sources = []
 
         if ok:
             q = getattr(self, "_reg_queue", None)
@@ -32671,6 +32902,7 @@ class StackingSuiteDialog(QDialog):
         # AND drizzle masters are available to open).
         self._drizzle_master_paths = []
         self._drizzle_crop_paths   = []
+        self._park_fullframe_rejection_maps(None)
 
         for group_key, file_list in grouped_files.items():
             if not drizzle_enabled_global:
@@ -32734,6 +32966,7 @@ class StackingSuiteDialog(QDialog):
 
             if ok:
                 group_integration_data[group_key]["drizzled"] = True
+            self._drop_group_pixel_rejections(group_integration_data, group_key, None)
 
 
         # Build summary lines
@@ -33334,9 +33567,8 @@ class StackingSuiteDialog(QDialog):
 
                         if collect_per_file:
                             for i, fpath in enumerate(file_list):
-                                m = trm[i]
-                                if np.any(m):
-                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
+                                record_rejection_pixels(
+                                    per_file_rejections[fpath], x0, y0, trm[i])
 
                 dt = _time.perf_counter() - t0_tile
                 work_px = th * tw * len(file_list) * C
@@ -35037,6 +35269,10 @@ class StackingSuiteDialog(QDialog):
             _tree_files = self.light_files
             self.light_files, _n_swapped, _n_total, _align_matcher = \
                 self._resolve_aligned_counterparts(self.light_files)
+            # Tree frames are the calibrated copies; the swap points at the
+            # aligned copies. Both are intermediates once the masters exist.
+            self._remember_light_intermediate_sources(_tree_files)
+            self._append_light_intermediate_sources(self.light_files)
             # Registered twin -> the tree frame it replaced. The weights below
             # measure that original, exactly as Register and Integrate does.
             _twin_to_tree = {
@@ -36192,6 +36428,104 @@ class StackingSuiteDialog(QDialog):
         return arr
 
 
+    def _delete_light_intermediates_enabled(self) -> bool:
+        try:
+            return bool(self.settings.value(
+                "stacking/delete_light_intermediates", False, type=bool))
+        except Exception:
+            return False
+
+    def _remember_light_intermediate_sources(self, groups) -> None:
+        """Paths this light set started from (usually the calibrated copies)."""
+        paths = []
+        for lst in (groups or {}).values():
+            for p in lst or []:
+                if p:
+                    paths.append(os.path.normpath(str(p)))
+        self._light_intermediate_sources = paths
+
+    def _append_light_intermediate_sources(self, groups) -> None:
+        cur = list(getattr(self, "_light_intermediate_sources", None) or [])
+        for lst in (groups or {}).values():
+            for p in lst or []:
+                if p:
+                    cur.append(os.path.normpath(str(p)))
+        self._light_intermediate_sources = cur
+
+    def _purge_finished_light_intermediates(self) -> None:
+        """Delete this set's light copies now that the masters are written.
+
+        Only files under the stacking directory's intermediate folders.
+        Raw lights outside that tree, masters, darks and flats are ignored.
+        """
+        if not self._delete_light_intermediates_enabled():
+            self._light_intermediate_sources = []
+            return
+        stacking = getattr(self, "stacking_directory", None) or ""
+        candidates = list(getattr(self, "_light_intermediate_sources", None) or [])
+        for mapping in (
+            getattr(self, "_orig2norm", None) or {},
+            getattr(self, "valid_transforms", None) or {},
+            getattr(self, "orig_by_aligned", None) or {},
+        ):
+            try:
+                candidates.extend(mapping.values())
+            except Exception:
+                pass
+        for lst in (getattr(self, "light_files", None) or {}).values():
+            candidates.extend(lst or [])
+        files = light_intermediate_files(stacking, candidates)
+        removed = 0
+        nbytes = 0
+        for fp in files:
+            try:
+                nbytes += os.path.getsize(fp)
+            except OSError:
+                pass
+            try:
+                os.remove(fp)
+                removed += 1
+            except OSError:
+                pass
+        prune_empty_intermediate_dirs(stacking)
+        self._light_intermediate_sources = []
+        if removed:
+            self.update_status(self.tr(
+                "🧹 Removed {0} light intermediate file(s) ({1}) — masters kept."
+            ).format(removed, _human_bytes(nbytes)))
+
+    def _park_fullframe_rejection_maps(self, prepass=None):
+        """Drop full-frame rejection canvases once their .sasr is written.
+
+        Drizzle paints from the per-file coordinate lists, not from these
+        any/frac/count images. Each one is a whole sensor; a 10-filter
+        ASI6200 set is several GB sitting beside the drizzle canvas.
+        MFDeconv still reads them, so they stay while that pass is enabled.
+        """
+        try:
+            if self._mf_enabled():
+                return
+        except Exception:
+            return
+        maps = getattr(self, "_rej_maps", None)
+        if isinstance(maps, dict):
+            maps.clear()
+        if isinstance(prepass, dict):
+            for group in (prepass.get("groups") or {}).values():
+                if isinstance(group, dict):
+                    group["rej_maps"] = {}
+                    group["integrated_image"] = None
+
+    def _drop_group_pixel_rejections(self, group_integration_data, group_key, prepass=None):
+        """Release one group's per-file rejection coordinates after drizzle."""
+        info = (group_integration_data or {}).get(group_key)
+        if isinstance(info, dict):
+            info["rejection_map"] = None
+        if isinstance(prepass, dict):
+            group = (prepass.get("groups") or {}).get(group_key)
+            if isinstance(group, dict):
+                group["rejection_map"] = None
+
     def drizzle_stack_one_group(
         self,
         *,
@@ -36329,22 +36663,31 @@ class StackingSuiteDialog(QDialog):
         log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
 
         # ---- allocate buffers ----
+        # The CPU canvases are a second full copy of the output. Skip them
+        # when the GPU accumulator is resident; they are created only if that
+        # path is unavailable or fails.
         out_h = int(canvas_H)
         out_w = int(canvas_W)
-        drizzle_buffer = np.zeros((out_h, out_w) if is_mono else (out_h, out_w, c), dtype=self._dtype())
-        coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
+        _canvas_shape = (out_h, out_w) if is_mono else (out_h, out_w, c)
+        drizzle_buffer = None
+        coverage_buffer = None
         finalize_func = finalize_drizzle_2d if is_mono else finalize_drizzle_3d
         gpu_drizzle = None
         if not _force_cpu and self._hw_accel_enabled() and _torch_ok():
             try:
                 from setiastro.saspro.torch_drizzle import DrizzleAccumulator
                 gpu_drizzle = DrizzleAccumulator.create(
-                    drizzle_buffer.shape, self._dtype(), scale_factor,
+                    _canvas_shape, self._dtype(), scale_factor,
                     drop_shrink, _kcode, float(gauss_sigma), log)
                 if gpu_drizzle is not None:
                     log("Drizzle: accumulating frames and channel coverage on GPU.")
             except Exception as exc:
                 log(f"GPU drizzle unavailable: {exc}; using CPU.")
+                gpu_drizzle = None
+
+        if gpu_drizzle is None:
+            drizzle_buffer = np.zeros(_canvas_shape, dtype=self._dtype())
+            coverage_buffer = np.zeros_like(drizzle_buffer, dtype=self._dtype())
 
 
         # ---- helpers for rejection masks ----
@@ -36380,26 +36723,11 @@ class StackingSuiteDialog(QDialog):
                 return None
 
             mref = np.zeros((ref_H, ref_W), dtype=np.bool_)
-            for item in tiles:
-                try:
-                    x0, y0, m = item
-                except Exception:
-                    continue
-                if m is None:
-                    continue
-                # ensure bool
-                mm = np.asarray(m, dtype=np.bool_)
-                th, tw = mm.shape[:2]
-                if th <= 0 or tw <= 0:
-                    continue
-                x0i = int(x0); y0i = int(y0)
-                if x0i >= ref_W or y0i >= ref_H:
-                    continue
-                x1i = min(ref_W, x0i + tw)
-                y1i = min(ref_H, y0i + th)
-                if x1i <= x0i or y1i <= y0i:
-                    continue
-                mref[y0i:y1i, x0i:x1i] |= mm[:(y1i - y0i), :(x1i - x0i)]
+            # One frame at a time. The stored records are coordinates, so this
+            # mask is the only full-frame rejection buffer and it dies with
+            # the frame.
+            if paint_rejection_items(tiles, mref) <= 0 or not np.any(mref):
+                return None
 
             if _dilate_kernel is not None:
                 mref = cv2.dilate(mref.astype(np.uint8), _dilate_kernel, iterations=1).astype(bool)
@@ -36496,11 +36824,19 @@ class StackingSuiteDialog(QDialog):
             return None
 
         _prefetch_paths = [_pixel_path_for_entry(e) for e in entries]
+        # A full ASI6200 frame is ~230 MB. Four of them in flight, on top of
+        # the frame being deposited, is what pushed a 62 GB machine over the
+        # edge. One frame ahead is enough to hide the read.
+        _frame_bytes = int(ref_H) * int(ref_W) * 4 * (1 if is_mono else 3)
+        if _frame_bytes >= 64 * 1024 * 1024:
+            _lookahead, _pf_workers = 1, 1
+        else:
+            _lookahead, _pf_workers = 3, min(4, (os.cpu_count() or 4))
         _prefetch = _FramePrefetcher(
             _prefetch_paths,
             loader=lambda p: load_image(p)[0],   # pixels only; header/meta re-read where needed
-            lookahead=3,
-            workers=min(4, (os.cpu_count() or 4)),
+            lookahead=_lookahead,
+            workers=_pf_workers,
         )
 
         try:
@@ -36651,9 +36987,18 @@ class StackingSuiteDialog(QDialog):
             if gpu_drizzle is None:
                 raise
             log(f"GPU drizzle failed: {exc}; restarting the complete group on CPU.")
-            gpu_drizzle.close()
+            # Drop the GPU accumulator and the prefetched frames before the
+            # CPU retry allocates its own canvases. The finally below closes
+            # them again; close() is idempotent.
+            try:
+                gpu_drizzle.close()
+            except Exception:
+                pass
             gpu_drizzle = None
-            _prefetch.close()
+            try:
+                _prefetch.close()
+            except Exception:
+                pass
             drizzle_buffer = coverage_buffer = None
             img_data = None
             _free_torch_memory()
@@ -37433,9 +37778,8 @@ class StackingSuiteDialog(QDialog):
 
                             if collect_per_file:
                                 for i, fpath in enumerate(file_list):
-                                    m = trm[i]
-                                    if np.any(m):
-                                        per_file_rejections[fpath].append((x0, y0, m.copy()))
+                                    record_rejection_pixels(
+                                        per_file_rejections[fpath], x0, y0, trm[i])
 
                     dt = time.perf_counter() - t0
                     work_px = th * tw * N * channels
@@ -37945,9 +38289,8 @@ class StackingSuiteDialog(QDialog):
 
                             if collect_per_file:
                                 for i, fpath in enumerate(file_list):
-                                    m = trm[i]
-                                    if np.any(m):
-                                        per_file_rejections[fpath].append((x0, y0, m.copy()))
+                                    record_rejection_pixels(
+                                        per_file_rejections[fpath], x0, y0, trm[i])
 
                     dt = time.perf_counter() - t0
                     work_px = th * tw * N * channels

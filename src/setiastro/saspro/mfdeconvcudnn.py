@@ -3665,6 +3665,23 @@ class MultiFrameDeconvWorkercuDNN(QObject):
             )
             return valid
 
+        if isinstance(first, tuple) and len(first) == 3 and first[0] == "px":
+            total_rej = 0
+            for it in entry:
+                if not (isinstance(it, tuple) and len(it) == 3 and it[0] == "px"):
+                    continue
+                ys = np.asarray(it[1])
+                xs = np.asarray(it[2])
+                ok = (ys < H) & (xs < W)
+                if np.any(ok):
+                    valid[ys[ok], xs[ok]] = 0.0
+                    total_rej += int(np.count_nonzero(ok))
+            self._log(
+                f"MFDeconv pixel mask: {os.path.basename(path)} "
+                f"rejected_px={total_rej}"
+            )
+            return valid
+
         if isinstance(first, (list, tuple)) and len(first) == 3:
             total_rej = 0
 
