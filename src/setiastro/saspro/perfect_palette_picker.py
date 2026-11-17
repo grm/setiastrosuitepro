@@ -1266,74 +1266,82 @@ class PerfectPalettePicker(QWidget):
                     return r, g, b
                 return basic["SHO"]
             if name in ("Dynamic Inverse Pastel", "Fire & Ice"):
-                # Empirically tuned on real aligned Ha/OIII/SII WR134 data.
-                # Use Dynamic Inverse luminance to preserve faint OIII filaments;
-                # alter chroma without shrinking the cool-channel brightness.
-                di_r, di_g, di_b = self._map_channels_or_special(
-                    "Dynamic Inverse", ha, oo, si
-                )
-                lum = 0.2126 * di_r + 0.7152 * di_g + 0.0722 * di_b
-
-                H = np.clip(np.nan_to_num(ha), 0.0, 1.0)
-                O = np.clip(np.nan_to_num(oo), 0.0, 1.0)
-                S = np.clip(np.nan_to_num(si), 0.0, 1.0)
+                # Derived from the WR134 Ha/OIII/SII source data.
+                # Process in stripes to bound temporary memory for 15k+ frames.
+                # DI supplies luminance/detail; relative emission excess selects
+                # the cool and gold colours without desaturating OIII by dimming.
+                height, width = ha.shape[:2]
+                rows = max(1, min(height, 1_000_000 // max(1, width)))
+                out_r = np.empty((height, width), dtype=np.float32)
+                out_g = np.empty((height, width), dtype=np.float32)
+                out_b = np.empty((height, width), dtype=np.float32)
 
                 def smooth(x):
                     x = np.clip(x, 0.0, 1.0)
                     return x * x * (3.0 - 2.0 * x)
 
-                # PPP's Linear input stretches each mono channel to median
-                # 0.25. Demand OIII *excess* over Ha instead of recoloring
-                # the whole shared background, and reserve gold for SII
-                # filaments with significant absolute signal.
-                warm = 0.26 + 0.74 * smooth((H - 0.18) / 0.25)
-                gold = (
-                    smooth((S - 0.225) / 0.20)
-                    * smooth((S - 0.83 * H - 0.018) / 0.14)
-                )
-                cool = smooth(
-                    (O - 0.90 * H - 0.035) / (0.17 + 0.12 * H)
-                )
+                for y0 in range(0, height, rows):
+                    y1 = min(y0 + rows, height)
+                    H = np.clip(np.nan_to_num(ha[y0:y1]), 0.0, 1.0)
+                    O = np.clip(np.nan_to_num(oo[y0:y1]), 0.0, 1.0)
+                    S = np.clip(np.nan_to_num(si[y0:y1]), 0.0, 1.0)
+                    di_r, di_g, di_b = self._map_channels_or_special(
+                        "Dynamic Inverse", H, O, S
+                    )
+                    lum = (
+                        0.2126 * di_r + 0.7152 * di_g + 0.0722 * di_b
+                    )
 
-                # Per-pixel chromaticity: neutral -> burgundy -> honey/gold
-                # (where SII is strong) -> soft blue (where OIII dominates).
-                # No blue attenuation factors: luminosity comes from DI.
-                tr = (1.0 - warm) * 1.08 + warm * 1.50
-                tg = (1.0 - warm) * 0.94 + warm * 0.74
-                tb = (1.0 - warm) * 0.92 + warm * 0.67
-                tr = (1.0 - gold) * tr + gold * 1.47
-                tg = (1.0 - gold) * tg + gold * 1.13
-                tb = (1.0 - gold) * tb + gold * 0.42
-                tr = (1.0 - cool) * tr + cool * 0.78
-                tg = (1.0 - cool) * tg + cool * 0.93
-                tb = (1.0 - cool) * tb + cool * 1.19
+                    # PPP's mono statistical stretch targets median 0.25.
+                    # Absolute excess prevents globally recoloring the sky.
+                    warm = 0.26 + 0.74 * smooth((H - 0.18) / 0.25)
+                    gold = (
+                        smooth((S - 0.225) / 0.20)
+                        * smooth((S - 0.83 * H - 0.018) / 0.14)
+                    )
+                    cool = smooth(
+                        (O - 0.90 * H - 0.035) / (0.17 + 0.12 * H)
+                    )
 
-                tint_luma = np.maximum(
-                    0.2126 * tr + 0.7152 * tg + 0.0722 * tb,
-                    1e-6,
-                )
-                scale = lum / tint_luma
-                # Fire & Ice: pastel by default, room for Curves afterward.
-                strength = 0.80
-                fi_r = lum + strength * (tr * scale - lum)
-                fi_g = lum + strength * (tg * scale - lum)
-                fi_b = lum + strength * (tb * scale - lum)
+                    # Low-saturation, luminance-normalized targets:
+                    # burgundy Ha, gold SII, pale steel-blue OIII.
+                    tr = (1.0 - warm) * 1.08 + warm * 1.50
+                    tg = (1.0 - warm) * 0.94 + warm * 0.74
+                    tb = (1.0 - warm) * 0.92 + warm * 0.67
+                    tr = (1.0 - gold) * tr + gold * 1.47
+                    tg = (1.0 - gold) * tg + gold * 1.13
+                    tb = (1.0 - gold) * tb + gold * 0.42
+                    tr = (1.0 - cool) * tr + cool * 0.78
+                    tg = (1.0 - cool) * tg + cool * 0.93
+                    tb = (1.0 - cool) * tb + cool * 1.19
 
-                if name == "Dynamic Inverse Pastel":
-                    # A/B experiment: mostly recolored DI, but retain 35%
-                    # of its original RGB appearance and fine color contrast.
-                    r = 0.35 * di_r + 0.65 * fi_r
-                    g = 0.35 * di_g + 0.65 * fi_g
-                    b = 0.35 * di_b + 0.65 * fi_b
-                else:
-                    # Independent Fire & Ice experiment: apply the full
-                    # luminance-preserving burgundy/gold/blue colour mapping.
-                    r, g, b = fi_r, fi_g, fi_b
+                    tint_luma = np.maximum(
+                        0.2126 * tr + 0.7152 * tg + 0.0722 * tb,
+                        1e-6,
+                    )
+                    scale = lum / tint_luma
+                    strength = 0.80
+                    fi_r = lum + strength * (tr * scale - lum)
+                    fi_g = lum + strength * (tg * scale - lum)
+                    fi_b = lum + strength * (tb * scale - lum)
+
+                    if name == "Dynamic Inverse Pastel":
+                        # Experimental pastel recolour blended with 35%
+                        # original DI; preserves its subtle texture.
+                        out_r[y0:y1] = 0.35 * di_r + 0.65 * fi_r
+                        out_g[y0:y1] = 0.35 * di_g + 0.65 * fi_g
+                        out_b[y0:y1] = 0.35 * di_b + 0.65 * fi_b
+                    else:
+                        # Distinct Fire & Ice experiment: stronger separation
+                        # while preserving the same underlying DI luminance.
+                        out_r[y0:y1] = fi_r
+                        out_g[y0:y1] = fi_g
+                        out_b[y0:y1] = fi_b
 
                 return (
-                    np.clip(r, 0.0, 1.0),
-                    np.clip(g, 0.0, 1.0),
-                    np.clip(b, 0.0, 1.0),
+                    np.clip(out_r, 0.0, 1.0, out=out_r),
+                    np.clip(out_g, 0.0, 1.0, out=out_g),
+                    np.clip(out_b, 0.0, 1.0, out=out_b),
                 )
             if name == "Dynamic Inverse":
                 S = np.clip(np.nan_to_num(ha), 0.0, 1.0)
