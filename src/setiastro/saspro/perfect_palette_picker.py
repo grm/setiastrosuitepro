@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Dynamic Inverse Pastel", "Fire & Ice",
+        "Dynamic Inverse", "Dynamic Inverse Pastel", "Dynamic Inverse Pastel V2", "Fire & Ice",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,7 +1265,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Dynamic Inverse Pastel", "Fire & Ice"):
+            if name in ("Dynamic Inverse Pastel", "Dynamic Inverse Pastel V2", "Fire & Ice"):
                 # Derived from the WR134 Ha/OIII/SII source data.
                 # Process in stripes to bound temporary memory for 15k+ frames.
                 # DI supplies luminance/detail; relative emission excess selects
@@ -1313,6 +1313,15 @@ class PerfectPalettePicker(QWidget):
                         tr = (1.0 - gold) * tr + gold * 1.47
                         tg = (1.0 - gold) * tg + gold * 1.13
                         tb = (1.0 - gold) * tb + gold * 0.42
+                    elif name == "Dynamic Inverse Pastel V2":
+                        # Keep V1 and its OIII selection intact; gently warm
+                        # the Ha/SII target toward red and honey-gold.
+                        tr = (1.0 - warm) * 1.10 + warm * 1.56
+                        tg = (1.0 - warm) * 0.90 + warm * 0.68
+                        tb = (1.0 - warm) * 0.82 + warm * 0.54
+                        tr = (1.0 - gold) * tr + gold * 1.48
+                        tg = (1.0 - gold) * tg + gold * 1.16
+                        tb = (1.0 - gold) * tb + gold * 0.36
                     else:
                         # Fire & Ice V8: stronger red/green and red/blue
                         # separation to prevent pink/salmon Ha backgrounds.
@@ -1342,6 +1351,12 @@ class PerfectPalettePicker(QWidget):
                         out_r[y0:y1] = 0.35 * di_r + 0.65 * fi_r
                         out_g[y0:y1] = 0.35 * di_g + 0.65 * fi_g
                         out_b[y0:y1] = 0.35 * di_b + 0.65 * fi_b
+                    elif name == "Dynamic Inverse Pastel V2":
+                        # More warm recolouring than V1 while preserving a
+                        # little more of DI's soft OIII blue channel.
+                        out_r[y0:y1] = 0.28 * di_r + 0.72 * fi_r
+                        out_g[y0:y1] = 0.32 * di_g + 0.68 * fi_g
+                        out_b[y0:y1] = 0.38 * di_b + 0.62 * fi_b
                     else:
                         # Distinct Fire & Ice experiment: stronger separation
                         # while preserving the same underlying DI luminance.
