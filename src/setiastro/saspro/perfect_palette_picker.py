@@ -1266,36 +1266,47 @@ class PerfectPalettePicker(QWidget):
                     return r, g, b
                 return basic["SHO"]
             if name == "Fire & Ice":
-                # Warm red/amber emission with blue confined to OIII-dominant
-                # regions. Keep the original Dynamic Inverse unchanged.
+                # V2: gentle crimson/amber base with OIII-dominant cool pockets.
+                # Designed for the already prepared (optionally stretched)
+                # channels supplied by Perfect Palette Picker.
                 ha_sig = np.clip(np.nan_to_num(ha), 0.0, 1.0)
                 o_sig = np.clip(np.nan_to_num(oo), 0.0, 1.0)
                 sii_sig = np.clip(np.nan_to_num(si), 0.0, 1.0)
 
-                # H-alpha supplies the deep red base; SII enriches warm
-                # filaments. The green contribution is selective so diffuse
-                # Ha remains crimson instead of turning uniformly orange.
-                warm = np.clip(0.90 * ha_sig + 0.72 * sii_sig, 0.0, 1.0)
+                # Avoid saturating broad H-alpha regions by summing two nearly
+                # full-strength warm channels. SII adds gold mainly to filaments.
+                warm = np.clip(0.68 * ha_sig + 0.24 * sii_sig, 0.0, 1.0)
                 gold = np.clip(sii_sig - 0.30 * ha_sig, 0.0, 1.0)
-                gold = gold * np.clip((warm - 0.12) / 0.55, 0.0, 1.0)
-                warm_green = np.clip(0.55 * gold, 0.0, 1.0)
+                gold *= np.clip((warm - 0.15) / 0.55, 0.0, 1.0)
 
-                # Only give OIII a blue colour where it stands out from the
-                # warm emissions. Smoothstep avoids hard boundaries, and
-                # suppressing warm red in those regions prevents magenta.
-                blue_dominance = np.clip(
-                    (o_sig - 0.32 * warm) / (0.50 * warm + 0.12),
+                # OIII must dominate locally to become blue. Work with relative
+                # signal strengths, not a fixed absolute threshold. Smoothstep
+                # gives a feathered transition without abrupt colour boundaries.
+                blue_mix = np.clip(
+                    (o_sig - 0.36 * warm) / (0.42 * warm + 0.18),
                     0.0, 1.0,
                 )
-                blue_dominance = blue_dominance * blue_dominance * (
-                    3.0 - 2.0 * blue_dominance
-                )
-                warm_keep = 1.0 - 0.97 * blue_dominance
+                blue_mix = blue_mix * blue_mix * (3.0 - 2.0 * blue_mix)
 
-                r = np.clip(warm * warm_keep, 0.0, 1.0)
-                g = np.clip(warm_green * warm_keep, 0.0, 1.0)
-                b = np.clip(o_sig * blue_dominance, 0.0, 1.0)
-                return r, g, b
+                # Quadratic crossfade stops strong red and blue coexisting
+                # around the transition (the source of purple/magenta).
+                # A low-saturation neutral bridge prevents dark colour seams.
+                warm_weight = (1.0 - blue_mix) ** 2
+                blue_weight = blue_mix ** 2
+                bridge = (
+                    0.18 * np.minimum(warm, o_sig)
+                    * (4.0 * blue_mix * (1.0 - blue_mix))
+                )
+
+                r = (0.82 * warm) * warm_weight + (0.03 * o_sig) * blue_weight + bridge
+                g = (0.16 * warm + 0.36 * gold) * warm_weight + (0.08 * o_sig) * blue_weight + bridge
+                b = (0.06 * warm) * warm_weight + (0.78 * o_sig) * blue_weight + bridge
+
+                return (
+                    np.clip(r, 0.0, 1.0),
+                    np.clip(g, 0.0, 1.0),
+                    np.clip(b, 0.0, 1.0),
+                )
             if name == "Dynamic Inverse":
                 S = np.clip(np.nan_to_num(ha), 0.0, 1.0)
                 O = np.clip(np.nan_to_num(oo), 0.0, 1.0)
