@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Fire & Ice",
+        "Dynamic Inverse", "Dynamic Inverse Pastel", "Fire & Ice",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,41 +1265,82 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
+            if name == "Dynamic Inverse Pastel":
+                # Experiment A: preserve Dynamic Inverse luminance and texture.
+                # Reduce its chroma, then shift the cyan OIII tint gently toward
+                # soft blue without changing its local brightness.
+                base_r, base_g, base_b = self._map_channels_or_special(
+                    "Dynamic Inverse", ha, oo, si
+                )
+                lum = (
+                    0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b
+                )
+                warm = np.clip(0.60 * ha + 0.40 * si, 0.0, 1.0)
+                cool = np.clip(
+                    (oo - 0.25 * warm) / (0.50 * warm + 0.23),
+                    0.0, 1.0,
+                )
+                cool = cool * cool * (3.0 - 2.0 * cool)
+                shift = cool * lum
+
+                # The shift is approximately luminance-neutral in Rec.709:
+                # +0.06 R -0.065 G +0.47 B balances to ~0 in Y.
+                r = lum + 0.56 * (base_r - lum) + 0.06 * shift
+                g = lum + 0.56 * (base_g - lum) - 0.065 * shift
+                b = lum + 0.56 * (base_b - lum) + 0.47 * shift
+                return (
+                    np.clip(r, 0.0, 1.0),
+                    np.clip(g, 0.0, 1.0),
+                    np.clip(b, 0.0, 1.0),
+                )
             if name == "Fire & Ice":
-                # V5: pastel base with burgundy/gold warmth and subtle OIII blue.
-                # Designed to preserve more OIII structure and leave headroom
-                # for curves/saturation work after the palette build.
+                # Experiment B / V6: different hues from Dynamic Inverse Pastel,
+                # but use the same Dynamic Inverse luminance for OIII detail.
+                # Hue selection changes *colour*, not the nebular brightness.
+                base_r, base_g, base_b = self._map_channels_or_special(
+                    "Dynamic Inverse", ha, oo, si
+                )
+                lum = (
+                    0.2126 * base_r + 0.7152 * base_g + 0.0722 * base_b
+                )
+
                 ha_sig = np.clip(np.nan_to_num(ha), 0.0, 1.0)
                 o_sig = np.clip(np.nan_to_num(oo), 0.0, 1.0)
                 sii_sig = np.clip(np.nan_to_num(si), 0.0, 1.0)
+                warm = np.clip(0.68 * ha_sig + 0.24 * sii_sig, 0.0, 1.0)
 
-                # Softer warm base: less "cooked", more headroom.
-                warm = np.clip(0.62 * ha_sig + 0.20 * sii_sig, 0.0, 1.0)
-                gold = np.clip(sii_sig - 0.28 * ha_sig, 0.0, 1.0)
-                gold *= np.clip((warm - 0.12) / 0.50, 0.0, 1.0)
-
-                # Keep OIII localized, but preserve more of its internal structure.
-                blue_mix = np.clip(
-                    (o_sig - 0.46 * warm) / (0.58 * warm + 0.24),
+                # Retain the OIII spatial selection from the earlier V3-V5,
+                # but don't attenuate luminance when OIII is not dominant.
+                cool = np.clip(
+                    (o_sig - 0.48 * warm) / (0.60 * warm + 0.22),
                     0.0, 1.0,
                 )
-                blue_mix = blue_mix * blue_mix * (3.0 - 2.0 * blue_mix)
-
-                # Softer crossfade to keep things pastel and avoid abrupt color blocks.
-                warm_weight = (1.0 - blue_mix) ** 1.25
-                blue_weight = blue_mix ** 1.65
-                bridge = (
-                    0.10 * np.minimum(warm, o_sig)
-                    * (4.0 * blue_mix * (1.0 - blue_mix))
+                cool = cool * cool * (3.0 - 2.0 * cool)
+                gold = np.clip(
+                    (sii_sig - 0.34 * ha_sig) / (sii_sig + 0.20),
+                    0.0, 1.0,
                 )
 
-                # Warm zones: softer burgundy/orange base with mild gold.
-                # Cool zones: subdued, cleaner blue that preserves OIII detail
-                # without becoming electric or muddy.
-                r = (0.74 * warm) * warm_weight + (0.05 * o_sig) * blue_weight + bridge
-                g = (0.12 * warm + 0.40 * gold) * warm_weight + (0.10 * o_sig) * blue_weight + bridge
-                b = (0.04 * warm) * warm_weight + (0.26 * o_sig) * blue_weight + bridge
+                # Muted burgundy -> honey gold -> slate/pastel blue. Each
+                # target chromaticity is normalized to the SAME luminance.
+                # This prevents the dark OIII blocks of V3-V5.
+                warm_r = 1.20 + 0.04 * gold
+                warm_g = 0.82 + 0.24 * gold
+                warm_b = 0.93 - 0.23 * gold
+                target_r = (1.0 - cool) * warm_r + 0.76 * cool
+                target_g = (1.0 - cool) * warm_g + 0.92 * cool
+                target_b = (1.0 - cool) * warm_b + 1.18 * cool
+                target_lum = (
+                    0.2126 * target_r + 0.7152 * target_g
+                    + 0.0722 * target_b
+                )
 
+                scale = lum / np.maximum(target_lum, 1e-6)
+                # Slightly reduce saturation for subsequent Curves.
+                chroma = 0.83
+                r = lum + chroma * (target_r * scale - lum)
+                g = lum + chroma * (target_g * scale - lum)
+                b = lum + chroma * (target_b * scale - lum)
                 return (
                     np.clip(r, 0.0, 1.0),
                     np.clip(g, 0.0, 1.0),
