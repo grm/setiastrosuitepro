@@ -1266,38 +1266,39 @@ class PerfectPalettePicker(QWidget):
                     return r, g, b
                 return basic["SHO"]
             if name == "Fire & Ice":
-                # V4: softer burgundy/gold with desaturated slate-blue OIII.
-                # PPP supplies input channels after optional statistical stretch.
+                # V5: pastel base with burgundy/gold warmth and subtle OIII blue.
+                # Designed to preserve more OIII structure and leave headroom
+                # for curves/saturation work after the palette build.
                 ha_sig = np.clip(np.nan_to_num(ha), 0.0, 1.0)
                 o_sig = np.clip(np.nan_to_num(oo), 0.0, 1.0)
                 sii_sig = np.clip(np.nan_to_num(si), 0.0, 1.0)
 
-                # Keep the warm signal below saturation, with SII providing
-                # gold on the filaments rather than turning all Ha orange.
-                warm = np.clip(0.68 * ha_sig + 0.24 * sii_sig, 0.0, 1.0)
-                gold = np.clip(sii_sig - 0.30 * ha_sig, 0.0, 1.0)
-                gold *= np.clip((warm - 0.15) / 0.55, 0.0, 1.0)
+                # Softer warm base: less "cooked", more headroom.
+                warm = np.clip(0.62 * ha_sig + 0.20 * sii_sig, 0.0, 1.0)
+                gold = np.clip(sii_sig - 0.28 * ha_sig, 0.0, 1.0)
+                gold *= np.clip((warm - 0.12) / 0.50, 0.0, 1.0)
 
-                # Preserve V3's OIII localization and smooth transition.
+                # Keep OIII localized, but preserve more of its internal structure.
                 blue_mix = np.clip(
-                    (o_sig - 0.48 * warm) / (0.60 * warm + 0.22),
+                    (o_sig - 0.46 * warm) / (0.58 * warm + 0.24),
                     0.0, 1.0,
                 )
                 blue_mix = blue_mix * blue_mix * (3.0 - 2.0 * blue_mix)
-                warm_weight = (1.0 - blue_mix) ** 1.6
-                blue_weight = blue_mix ** 2.4
+
+                # Softer crossfade to keep things pastel and avoid abrupt color blocks.
+                warm_weight = (1.0 - blue_mix) ** 1.25
+                blue_weight = blue_mix ** 1.65
                 bridge = (
-                    0.12 * np.minimum(warm, o_sig)
+                    0.10 * np.minimum(warm, o_sig)
                     * (4.0 * blue_mix * (1.0 - blue_mix))
                 )
 
-                # Slate blue rather than electric blue: add neutral red/green
-                # to OIII-dominant areas while retaining B > G > R so the
-                # cool regions stay blue (not cyan). Softer warm red leaves
-                # contrast/saturation headroom for subsequent curves.
-                r = (0.88 * warm) * warm_weight + (0.20 * o_sig) * blue_weight + bridge
-                g = (0.14 * warm + 0.52 * gold) * warm_weight + (0.26 * o_sig) * blue_weight + bridge
-                b = (0.07 * warm) * warm_weight + (0.39 * o_sig) * blue_weight + bridge
+                # Warm zones: softer burgundy/orange base with mild gold.
+                # Cool zones: subdued, cleaner blue that preserves OIII detail
+                # without becoming electric or muddy.
+                r = (0.74 * warm) * warm_weight + (0.05 * o_sig) * blue_weight + bridge
+                g = (0.12 * warm + 0.40 * gold) * warm_weight + (0.10 * o_sig) * blue_weight + bridge
+                b = (0.04 * warm) * warm_weight + (0.26 * o_sig) * blue_weight + bridge
 
                 return (
                     np.clip(r, 0.0, 1.0),
