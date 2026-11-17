@@ -1305,12 +1305,23 @@ class PerfectPalettePicker(QWidget):
 
                     # Low-saturation, luminance-normalized targets:
                     # burgundy Ha, gold SII, pale steel-blue OIII.
-                    tr = (1.0 - warm) * 1.18 + warm * 1.62
-                    tg = (1.0 - warm) * 0.84 + warm * 0.58
-                    tb = (1.0 - warm) * 0.58 + warm * 0.28
-                    tr = (1.0 - gold) * tr + gold * 1.45
-                    tg = (1.0 - gold) * tg + gold * 1.08
-                    tb = (1.0 - gold) * tb + gold * 0.38
+                    if name == "Dynamic Inverse Pastel":
+                        # Keep the previous Pastel tint exactly unchanged.
+                        tr = (1.0 - warm) * 1.08 + warm * 1.50
+                        tg = (1.0 - warm) * 0.94 + warm * 0.74
+                        tb = (1.0 - warm) * 0.92 + warm * 0.67
+                        tr = (1.0 - gold) * tr + gold * 1.47
+                        tg = (1.0 - gold) * tg + gold * 1.13
+                        tb = (1.0 - gold) * tb + gold * 0.42
+                    else:
+                        # Fire & Ice V8: stronger red/green and red/blue
+                        # separation to prevent pink/salmon Ha backgrounds.
+                        tr = (1.0 - warm) * 1.18 + warm * 1.62
+                        tg = (1.0 - warm) * 0.84 + warm * 0.58
+                        tb = (1.0 - warm) * 0.58 + warm * 0.28
+                        tr = (1.0 - gold) * tr + gold * 1.45
+                        tg = (1.0 - gold) * tg + gold * 1.08
+                        tb = (1.0 - gold) * tb + gold * 0.38
                     tr = (1.0 - cool) * tr + cool * 0.78
                     tg = (1.0 - cool) * tg + cool * 0.93
                     tb = (1.0 - cool) * tb + cool * 1.19
