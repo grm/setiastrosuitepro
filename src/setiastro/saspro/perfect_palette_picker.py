@@ -1266,41 +1266,39 @@ class PerfectPalettePicker(QWidget):
                     return r, g, b
                 return basic["SHO"]
             if name == "Fire & Ice":
-                # V2: gentle crimson/amber base with OIII-dominant cool pockets.
-                # Designed for the already prepared (optionally stretched)
-                # channels supplied by Perfect Palette Picker.
+                # V3: burgundy and amber filaments with restrained steel-blue
+                # accents only in regions with comparatively strong OIII.
+                # This palette receives the channels already prepared by PPP.
                 ha_sig = np.clip(np.nan_to_num(ha), 0.0, 1.0)
                 o_sig = np.clip(np.nan_to_num(oo), 0.0, 1.0)
                 sii_sig = np.clip(np.nan_to_num(si), 0.0, 1.0)
 
                 # Avoid saturating broad H-alpha regions by summing two nearly
-                # full-strength warm channels. SII adds gold mainly to filaments.
+                # full-strength channels. Keep SII-driven warm filaments.
                 warm = np.clip(0.68 * ha_sig + 0.24 * sii_sig, 0.0, 1.0)
                 gold = np.clip(sii_sig - 0.30 * ha_sig, 0.0, 1.0)
                 gold *= np.clip((warm - 0.15) / 0.55, 0.0, 1.0)
 
-                # OIII must dominate locally to become blue. Work with relative
-                # signal strengths, not a fixed absolute threshold. Smoothstep
-                # gives a feathered transition without abrupt colour boundaries.
+                # Require clearer OIII dominance than in V2 so blue remains
+                # an accent, not an extensive colour wash.
                 blue_mix = np.clip(
-                    (o_sig - 0.36 * warm) / (0.42 * warm + 0.18),
+                    (o_sig - 0.48 * warm) / (0.60 * warm + 0.22),
                     0.0, 1.0,
                 )
                 blue_mix = blue_mix * blue_mix * (3.0 - 2.0 * blue_mix)
 
-                # Quadratic crossfade stops strong red and blue coexisting
-                # around the transition (the source of purple/magenta).
-                # A low-saturation neutral bridge prevents dark colour seams.
-                warm_weight = (1.0 - blue_mix) ** 2
-                blue_weight = blue_mix ** 2
+                # Asymmetric, feathered crossfade: hold warmth longer, bring
+                # blue in more gently, with a subtle neutral transition.
+                warm_weight = (1.0 - blue_mix) ** 1.6
+                blue_weight = blue_mix ** 2.4
                 bridge = (
-                    0.18 * np.minimum(warm, o_sig)
+                    0.12 * np.minimum(warm, o_sig)
                     * (4.0 * blue_mix * (1.0 - blue_mix))
                 )
 
-                r = (0.82 * warm) * warm_weight + (0.03 * o_sig) * blue_weight + bridge
-                g = (0.16 * warm + 0.36 * gold) * warm_weight + (0.08 * o_sig) * blue_weight + bridge
-                b = (0.06 * warm) * warm_weight + (0.78 * o_sig) * blue_weight + bridge
+                r = (0.88 * warm) * warm_weight + (0.02 * o_sig) * blue_weight + bridge
+                g = (0.18 * warm + 0.42 * gold) * warm_weight + (0.06 * o_sig) * blue_weight + bridge
+                b = (0.03 * warm) * warm_weight + (0.52 * o_sig) * blue_weight + bridge
 
                 return (
                     np.clip(r, 0.0, 1.0),
