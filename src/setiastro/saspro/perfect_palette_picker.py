@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse",
+        "Dynamic Inverse", "Fire & Ice",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,6 +1265,37 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
+            if name == "Fire & Ice":
+                # Warm red/amber emission with blue confined to OIII-dominant
+                # regions. Keep the original Dynamic Inverse unchanged.
+                ha_sig = np.clip(np.nan_to_num(ha), 0.0, 1.0)
+                o_sig = np.clip(np.nan_to_num(oo), 0.0, 1.0)
+                sii_sig = np.clip(np.nan_to_num(si), 0.0, 1.0)
+
+                # H-alpha supplies the deep red base; SII enriches warm
+                # filaments. The green contribution is selective so diffuse
+                # Ha remains crimson instead of turning uniformly orange.
+                warm = np.clip(0.90 * ha_sig + 0.72 * sii_sig, 0.0, 1.0)
+                gold = np.clip(sii_sig - 0.30 * ha_sig, 0.0, 1.0)
+                gold = gold * np.clip((warm - 0.12) / 0.55, 0.0, 1.0)
+                warm_green = np.clip(0.55 * gold, 0.0, 1.0)
+
+                # Only give OIII a blue colour where it stands out from the
+                # warm emissions. Smoothstep avoids hard boundaries, and
+                # suppressing warm red in those regions prevents magenta.
+                blue_dominance = np.clip(
+                    (o_sig - 0.32 * warm) / (0.50 * warm + 0.12),
+                    0.0, 1.0,
+                )
+                blue_dominance = blue_dominance * blue_dominance * (
+                    3.0 - 2.0 * blue_dominance
+                )
+                warm_keep = 1.0 - 0.97 * blue_dominance
+
+                r = np.clip(warm * warm_keep, 0.0, 1.0)
+                g = np.clip(warm_green * warm_keep, 0.0, 1.0)
+                b = np.clip(o_sig * blue_dominance, 0.0, 1.0)
+                return r, g, b
             if name == "Dynamic Inverse":
                 S = np.clip(np.nan_to_num(ha), 0.0, 1.0)
                 O = np.clip(np.nan_to_num(oo), 0.0, 1.0)
