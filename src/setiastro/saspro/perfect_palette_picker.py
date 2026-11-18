@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,7 +1265,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or", "Bordeaux & Bleu Acier"):
+            if name in ("Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Bordeaux & Bleu Acier"):
                 # WR134-calibrated experiments, based on the verified TIFF
                 # formulas. Channels arrive already statistically stretched
                 # when "Linear input" is selected in Perfect Palette Picker.
@@ -1276,6 +1276,15 @@ class PerfectPalettePicker(QWidget):
                     gold_color = (1.79, 1.08, 0.28)
                     blue = (0.73, 0.92, 1.23)
                     shade, gold_boost, cool_boost, chroma = 0.82, 0.90, 0.12, 0.72
+                elif name == "Pastel Bordeaux & Or V2":
+                    # Same OIII blue as V1. Measured on aligned WR134 TIFFs:
+                    # burgundy Ha with R/B balance, brighter amber-gold SII,
+                    # still pastel before a K/S curve.
+                    neutral = (1.32, 0.65, 0.71)
+                    red = (1.70, 0.46, 0.63)
+                    gold_color = (1.78, 1.20, 0.30)
+                    blue = (0.73, 0.92, 1.23)
+                    shade, gold_boost, cool_boost, chroma = 0.80, 1.04, 0.12, 0.77
                 else:
                     neutral = (1.23, 0.74, 0.55)
                     red = (1.70, 0.53, 0.40)
@@ -1314,11 +1323,20 @@ class PerfectPalettePicker(QWidget):
                     cool = smoothstep(
                         (O - 0.90 * H - 0.035) / (0.17 + 0.12 * H)
                     )
-                    gold = (
-                        smoothstep((S - 0.24) / 0.19)
-                        * smoothstep((S - 0.80 * H - 0.015) / 0.14)
-                        * (1.0 - 0.70 * cool)
-                    )
+                    if name == "Pastel Bordeaux & Or V2":
+                        # Pick out more SII-positive filaments while excluding
+                        # OIII-dominant structures and leaving the blue intact.
+                        gold = (
+                            smoothstep((S - 0.23) / 0.17)
+                            * smoothstep((S - 0.84 * H - 0.006) / 0.12)
+                            * (1.0 - 0.85 * cool)
+                        )
+                    else:
+                        gold = (
+                            smoothstep((S - 0.24) / 0.19)
+                            * smoothstep((S - 0.80 * H - 0.015) / 0.14)
+                            * (1.0 - 0.70 * cool)
+                        )
 
                     # Choose chromaticity independently of luminance:
                     # diffuse burgundy, locally brighter SII gold and
