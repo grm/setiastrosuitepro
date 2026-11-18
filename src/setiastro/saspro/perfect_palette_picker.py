@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,7 +1265,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name == "Pastel Bordeaux & Or V5":
+            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6"):
                 # V5: WR134 full-resolution calibrated pastel base.
                 # Diffuse Ha stays deep red; weak SII does not turn the
                 # whole nebula copper. Amber is reserved for bright SII-rich
@@ -1276,6 +1276,26 @@ class PerfectPalettePicker(QWidget):
                 out_r = np.empty((height, width), dtype=np.float32)
                 out_g = np.empty((height, width), dtype=np.float32)
                 out_b = np.empty((height, width), dtype=np.float32)
+
+                # For V6, match the separate global normalization that the
+                # original Dynamic Inverse receives in PPP. Keep memory
+                # bounded by scanning one stripe at a time.
+                di_max = 1.0
+                if name == "Pastel Bordeaux & Or V6":
+                    di_max = 1e-6
+                    for p0 in range(0, height, rows):
+                        p1 = min(height, p0 + rows)
+                        H0 = np.clip(np.nan_to_num(ha[p0:p1]), 0.0, 1.0)
+                        O0 = np.clip(np.nan_to_num(oo[p0:p1]), 0.0, 1.0)
+                        S0 = np.clip(np.nan_to_num(si[p0:p1]), 0.0, 1.0)
+                        x0 = np.clip(1.0 - S0, 1e-6, 1.0)
+                        gate0 = x0 ** (1.0 - x0)
+                        di_max = max(
+                            di_max,
+                            float(np.max((1.0 - O0) * S0 + O0 * H0)),
+                            float(np.max((1.0 - gate0) * S0 + gate0 * O0)),
+                            float(np.max((0.5 + 0.5 * gate0) * O0)),
+                        )
 
                 def smoothstep(v):
                     v = np.clip(v, 0.0, 1.0)
@@ -1347,9 +1367,43 @@ class PerfectPalettePicker(QWidget):
                     )
                     scale = Y2 / target_Y
                     chroma = 0.75 - 0.08 * cool
-                    out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
-                    out_g[y0:y1] = Y2 + chroma * (tg * scale - Y2)
-                    out_b[y0:y1] = Y2 + chroma * (tb * scale - Y2)
+                    if name == "Pastel Bordeaux & Or V6":
+                        # Dynamic Inverse provides the natural SII/copper
+                        # transitions absent from V5's strong red mapping.
+                        # Reduce the V5 fraction selectively on SII structure.
+                        sii_detail = (
+                            smoothstep((S - 0.28) / 0.16)
+                            * smoothstep((S - 0.75 * H) / 0.20)
+                            * (1.0 - cool)
+                        )
+                        mix_v5 = np.clip(
+                            0.70 - 0.28 * sii_detail + 0.04 * cool,
+                            0.0, 1.0,
+                        )
+                        mix_di = 1.0 - mix_v5
+                        out_r[y0:y1] = (
+                            mix_di * (di_r / di_max)
+                            + mix_v5 * np.clip(
+                                Y2 + chroma * (tr * scale - Y2), 0.0, 1.0
+                            )
+                        )
+                        out_g[y0:y1] = (
+                            mix_di * (di_g / di_max)
+                            + mix_v5 * np.clip(
+                                Y2 + chroma * (tg * scale - Y2), 0.0, 1.0
+                            )
+                        )
+                        out_b[y0:y1] = (
+                            mix_di * (di_b / di_max)
+                            + mix_v5 * np.clip(
+                                Y2 + chroma * (tb * scale - Y2), 0.0, 1.0
+                            )
+                        )
+                    else:
+                        # Preserve V5 formula exactly.
+                        out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
+                        out_g[y0:y1] = Y2 + chroma * (tg * scale - Y2)
+                        out_b[y0:y1] = Y2 + chroma * (tb * scale - Y2)
 
                 return (
                     np.clip(out_r, 0.0, 1.0, out=out_r),
