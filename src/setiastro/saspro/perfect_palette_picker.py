@@ -304,7 +304,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1285,7 +1285,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6"):
+            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7"):
                 # V5: WR134 full-resolution calibrated pastel base.
                 # Diffuse Ha stays deep red; weak SII does not turn the
                 # whole nebula copper. Amber is reserved for bright SII-rich
@@ -1301,7 +1301,7 @@ class PerfectPalettePicker(QWidget):
                 # original Dynamic Inverse receives in PPP. Keep memory
                 # bounded by scanning one stripe at a time.
                 di_max = 1.0
-                if name == "Pastel Bordeaux & Or V6":
+                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7"):
                     di_max = 1e-6
                     for p0 in range(0, height, rows):
                         p1 = min(height, p0 + rows)
@@ -1387,19 +1387,40 @@ class PerfectPalettePicker(QWidget):
                     )
                     scale = Y2 / target_Y
                     chroma = 0.75 - 0.08 * cool
-                    if name == "Pastel Bordeaux & Or V6":
-                        # Dynamic Inverse provides the natural SII/copper
-                        # transitions absent from V5's strong red mapping.
-                        # Reduce the V5 fraction selectively on SII structure.
-                        sii_detail = (
-                            smoothstep((S - 0.28) / 0.16)
-                            * smoothstep((S - 0.75 * H) / 0.20)
-                            * (1.0 - cool)
-                        )
-                        mix_v5 = np.clip(
-                            0.70 - 0.28 * sii_detail + 0.04 * cool,
-                            0.0, 1.0,
-                        )
+                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7"):
+                        if name == "Pastel Bordeaux & Or V6":
+                            # V6 unchanged: global red dominance with
+                            # extra DI preserved on bright SII structures.
+                            sii_detail = (
+                                smoothstep((S - 0.28) / 0.16)
+                                * smoothstep((S - 0.75 * H) / 0.20)
+                                * (1.0 - cool)
+                            )
+                            mix_v5 = np.clip(
+                                0.70 - 0.28 * sii_detail + 0.04 * cool,
+                                0.0, 1.0,
+                            )
+                        else:
+                            # V7: choose the recolouring strength from the
+                            # actual emission balance rather than turning all
+                            # Ha regions the same shade of red.
+                            # More DI where SII-rich structures can retain
+                            # copper/amber; more V5 in diffuse Ha and OIII.
+                            sii_detail = (
+                                smoothstep((S - 0.20) / 0.19)
+                                * smoothstep((S - 0.67 * H - 0.005) / 0.22)
+                                * (1.0 - 0.85 * cool)
+                            )
+                            ha_diffuse = (
+                                smoothstep((H - 0.16) / 0.26)
+                                * (1.0 - 0.92 * cool)
+                                * (1.0 - 0.75 * sii_detail)
+                            )
+                            mix_v5 = np.clip(
+                                0.58 + 0.23 * ha_diffuse
+                                - 0.35 * sii_detail + 0.16 * cool,
+                                0.0, 1.0,
+                            )
                         mix_di = 1.0 - mix_v5
                         out_r[y0:y1] = (
                             mix_di * (di_r / di_max)
