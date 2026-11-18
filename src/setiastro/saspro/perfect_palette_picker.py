@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,7 +1265,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Bordeaux & Bleu Acier"):
+            if name in ("Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Bordeaux & Bleu Acier"):
                 # WR134-calibrated experiments, based on the verified TIFF
                 # formulas. Channels arrive already statistically stretched
                 # when "Linear input" is selected in Perfect Palette Picker.
@@ -1295,6 +1295,19 @@ class PerfectPalettePicker(QWidget):
                     gold_color = (1.78, 1.05, 0.30)
                     blue = (0.73, 0.92, 1.23)
                     shade, gold_boost, cool_boost, chroma = 0.80, 0.85, 0.12, 0.74
+                elif name == "Pastel Bordeaux & Or V4":
+                    # V4: diffuse burgundy Ha, intermediate copper/orange,
+                    # selective SII gold ridges, original soft OIII blue.
+                    neutral = (1.30, 0.60, 0.58)
+                    red = (1.72, 0.36, 0.50)
+                    orange = (1.78, 0.72, 0.26)
+                    gold_color = (1.80, 1.02, 0.24)
+                    blue = (0.73, 0.92, 1.23)
+                    shade = 0.80
+                    orange_boost = 0.18
+                    gold_boost = 0.78
+                    cool_boost = 0.12
+                    chroma = 0.75
                 else:
                     neutral = (1.23, 0.74, 0.55)
                     red = (1.70, 0.53, 0.40)
@@ -1341,12 +1354,30 @@ class PerfectPalettePicker(QWidget):
                             * smoothstep((S - 0.84 * H - 0.006) / 0.12)
                             * (1.0 - 0.85 * cool)
                         )
+                        orange_mask = None
+                    elif name == "Pastel Bordeaux & Or V4":
+                        # H-alpha with intermediate SII: orange/copper only
+                        # where warm structures are clearly present.
+                        orange_mask = (
+                            smoothstep((H - 0.18) / 0.22)
+                            * smoothstep((S - 0.14) / 0.16)
+                            * (1.0 - 0.55 * cool)
+                        )
+                        # Local amber/gold: require SII excess and a bright
+                        # ridge in the input DI luminance, not SII alone.
+                        gold = (
+                            smoothstep((S - 0.30) / 0.16)
+                            * smoothstep((S - 0.95 * H - 0.005) / 0.10)
+                            * smoothstep((Y - 0.18) / 0.12)
+                            * (1.0 - 0.90 * cool)
+                        )
                     else:
                         gold = (
                             smoothstep((S - 0.24) / 0.19)
                             * smoothstep((S - 0.80 * H - 0.015) / 0.14)
                             * (1.0 - 0.70 * cool)
                         )
+                        orange_mask = None
 
                     # Choose chromaticity independently of luminance:
                     # diffuse burgundy, locally brighter SII gold and
@@ -1354,9 +1385,16 @@ class PerfectPalettePicker(QWidget):
                     tr = neutral[0] + warm * (red[0] - neutral[0])
                     tg = neutral[1] + warm * (red[1] - neutral[1])
                     tb = neutral[2] + warm * (red[2] - neutral[2])
+                    if name == "Pastel Bordeaux & Or V4":
+                        # Burgundy -> copper on intermediate warm emission.
+                        tr = tr + orange_mask * (orange[0] - tr)
+                        tg = tg + orange_mask * (orange[1] - tg)
+                        tb = tb + orange_mask * (orange[2] - tb)
+                    # Gold overrides copper only in local SII-rich ridges.
                     tr = tr + gold * (gold_color[0] - tr)
                     tg = tg + gold * (gold_color[1] - tg)
                     tb = tb + gold * (gold_color[2] - tb)
+                    # Keep the same soft OIII blue target and cool selector.
                     tr = tr + cool * (blue[0] - tr)
                     tg = tg + cool * (blue[1] - tg)
                     tb = tb + cool * (blue[2] - tb)
@@ -1364,11 +1402,21 @@ class PerfectPalettePicker(QWidget):
                     # Preserve Dynamic Inverse's detail, darken diffuse Ha
                     # slightly and lift SII filaments without a harsh RGB
                     # saturation increase. PPP handles final normalization.
-                    Y2 = Y * (shade + gold_boost * gold + cool_boost * cool)
-                    if name == "Pastel Bordeaux & Or V3":
-                        # Darken diffuse warm regions without dimming fully
-                        # OIII-dominant pixels: preserving their texture.
-                        Y2 *= 0.89 + 0.11 * cool
+                    if name == "Pastel Bordeaux & Or V4":
+                        # Darker diffuse burgundy; lift copper/gold locally
+                        # without destroying OIII filaments.
+                        Y2 = Y * (
+                            shade
+                            + orange_boost * orange_mask
+                            + gold_boost * gold
+                            + cool_boost * cool
+                        )
+                        Y2 *= 0.92 - 0.08 * warm + 0.16 * gold + 0.06 * cool
+                    else:
+                        Y2 = Y * (shade + gold_boost * gold + cool_boost * cool)
+                        if name == "Pastel Bordeaux & Or V3":
+                            # Preserve the previous V3 darkening untouched.
+                            Y2 *= 0.89 + 0.11 * cool
                     tint_Y = 0.2126 * tr + 0.7152 * tg + 0.0722 * tb
                     scale = Y2 / np.maximum(tint_Y, 1e-6)
                     out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
