@@ -304,7 +304,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1285,7 +1285,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9"):
+            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10"):
                 # V5: WR134 full-resolution calibrated pastel base.
                 # Diffuse Ha stays deep red; weak SII does not turn the
                 # whole nebula copper. Amber is reserved for bright SII-rich
@@ -1301,7 +1301,7 @@ class PerfectPalettePicker(QWidget):
                 # original Dynamic Inverse receives in PPP. Keep memory
                 # bounded by scanning one stripe at a time.
                 di_max = 1.0
-                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9"):
+                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10"):
                     di_max = 1e-6
                     for p0 in range(0, height, rows):
                         p1 = min(height, p0 + rows)
@@ -1387,7 +1387,7 @@ class PerfectPalettePicker(QWidget):
                     )
                     scale = Y2 / target_Y
                     chroma = 0.75 - 0.08 * cool
-                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9"):
+                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10"):
                         if name == "Pastel Bordeaux & Or V6":
                             # V6 unchanged: global red dominance with
                             # extra DI preserved on bright SII structures.
@@ -1516,6 +1516,101 @@ class PerfectPalettePicker(QWidget):
                         out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
                         out_g[y0:y1] = Y2 + chroma * (tg * scale - Y2)
                         out_b[y0:y1] = Y2 + chroma * (tb * scale - Y2)
+
+                if name == "Pastel Bordeaux & Or V10":
+                    # V10 is based on V8, not V9: no aggressive Ha-wide
+                    # saturation. Apply a luminosity-preserving amber
+                    # recolour ONLY to SII-positive filaments, then a small
+                    # tonal lift there and restrained bright-Ha compression.
+                    # Normalization here mirrors the standalone V8 image and
+                    # keeps the experimental maths aligned with the previews.
+                    peak = max(
+                        float(np.max(out_r)), float(np.max(out_g)),
+                        float(np.max(out_b)), 1e-6,
+                    )
+                    out_r /= peak
+                    out_g /= peak
+                    out_b /= peak
+                    amber_target = (1.38, 0.95, 0.30)
+                    amber_y = (
+                        0.2126 * amber_target[0]
+                        + 0.7152 * amber_target[1]
+                        + 0.0722 * amber_target[2]
+                    )
+
+                    for y0 in range(0, height, rows):
+                        y1 = min(height, y0 + rows)
+                        H = np.clip(np.nan_to_num(ha[y0:y1]), 0.0, 1.0)
+                        O = np.clip(np.nan_to_num(oo[y0:y1]), 0.0, 1.0)
+                        S = np.clip(np.nan_to_num(si[y0:y1]), 0.0, 1.0)
+                        x = np.clip(1.0 - S, 1e-6, 1.0)
+                        gate = x ** (1.0 - x)
+                        di_r = (1.0 - O) * S + O * H
+                        di_g = (1.0 - gate) * S + gate * O
+                        di_b = (0.5 + 0.5 * gate) * O
+                        di_y = (
+                            0.2126 * di_r + 0.7152 * di_g
+                            + 0.0722 * di_b
+                        )
+                        cool = smoothstep(
+                            (O - 0.90 * H - 0.035) / (0.17 + 0.12 * H)
+                        )
+                        sii_detail = (
+                            smoothstep((S - 0.22) / 0.18)
+                            * smoothstep((S - 0.73 * H - 0.005) / 0.18)
+                            * (1.0 - 0.88 * cool)
+                        )
+                        ha_diffuse = (
+                            smoothstep((H - 0.20) / 0.24)
+                            * (1.0 - 0.90 * cool)
+                            * (1.0 - 0.78 * sii_detail)
+                        )
+                        gold = (
+                            smoothstep((S - 0.24) / 0.18)
+                            * smoothstep((S - 0.77 * H - 0.005) / 0.18)
+                            * smoothstep((di_y - 0.19) / 0.14)
+                            * (1.0 - 0.90 * cool)
+                        ) ** 1.3
+                        # Reinforce only the zones already warm in genuine DI
+                        # rather than painting a new gold mask over OIII.
+                        di_gold = (
+                            smoothstep(
+                                (di_g / di_max - 0.60 * di_r / di_max
+                                 - 0.008) / 0.065
+                            )
+                            * smoothstep(
+                                (di_r / di_max - di_b / di_max
+                                 - 0.02) / 0.14
+                            )
+                        )
+                        gold *= 0.45 + 0.55 * di_gold
+
+                        rr = out_r[y0:y1]
+                        gg = out_g[y0:y1]
+                        bb = out_b[y0:y1]
+                        lum = (
+                            0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+                        )
+                        k = 0.90 * gold
+                        bright_ha = (
+                            ha_diffuse * (1.0 - gold) * (1.0 - cool)
+                            * smoothstep((lum - 0.24) / 0.30)
+                        )
+                        # Warm reds become less shrill; selected SII crêtes
+                        # become more luminous and more distinctly amber.
+                        tone = 1.0 - 0.075 * bright_ha + 0.19 * gold
+                        rr[:] = (
+                            (1.0 - k) * rr
+                            + k * lum * (amber_target[0] / amber_y)
+                        ) * tone
+                        gg[:] = (
+                            (1.0 - k) * gg
+                            + k * lum * (amber_target[1] / amber_y)
+                        ) * tone
+                        bb[:] = (
+                            (1.0 - k) * bb
+                            + k * lum * (amber_target[2] / amber_y)
+                        ) * tone
 
                 return (
                     np.clip(out_r, 0.0, 1.0, out=out_r),
