@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,7 +1265,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Bordeaux & Bleu Acier"):
+            if name in ("Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Bordeaux & Bleu Acier"):
                 # WR134-calibrated experiments, based on the verified TIFF
                 # formulas. Channels arrive already statistically stretched
                 # when "Linear input" is selected in Perfect Palette Picker.
@@ -1285,6 +1285,16 @@ class PerfectPalettePicker(QWidget):
                     gold_color = (1.78, 1.20, 0.30)
                     blue = (0.73, 0.92, 1.23)
                     shade, gold_boost, cool_boost, chroma = 0.80, 1.04, 0.12, 0.77
+                elif name == "Pastel Bordeaux & Or V3":
+                    # Correct pink-magenta cast seen in V2 on WR134:
+                    # a darker burgundy Ha base with a restrained blue,
+                    # and softer amber rather than fluorescent yellow SII.
+                    # Keep V2's exact OIII target colour/selection.
+                    neutral = (1.34, 0.64, 0.60)
+                    red = (1.72, 0.39, 0.53)
+                    gold_color = (1.78, 1.05, 0.30)
+                    blue = (0.73, 0.92, 1.23)
+                    shade, gold_boost, cool_boost, chroma = 0.80, 0.85, 0.12, 0.74
                 else:
                     neutral = (1.23, 0.74, 0.55)
                     red = (1.70, 0.53, 0.40)
@@ -1355,6 +1365,10 @@ class PerfectPalettePicker(QWidget):
                     # slightly and lift SII filaments without a harsh RGB
                     # saturation increase. PPP handles final normalization.
                     Y2 = Y * (shade + gold_boost * gold + cool_boost * cool)
+                    if name == "Pastel Bordeaux & Or V3":
+                        # Darken diffuse warm regions without dimming fully
+                        # OIII-dominant pixels: preserving their texture.
+                        Y2 *= 0.89 + 0.11 * cool
                     tint_Y = 0.2126 * tr + 0.7152 * tg + 0.0722 * tb
                     scale = Y2 / np.maximum(tint_Y, 1e-6)
                     out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
