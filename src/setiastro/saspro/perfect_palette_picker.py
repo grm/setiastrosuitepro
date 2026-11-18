@@ -304,7 +304,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1285,7 +1285,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8"):
+            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9"):
                 # V5: WR134 full-resolution calibrated pastel base.
                 # Diffuse Ha stays deep red; weak SII does not turn the
                 # whole nebula copper. Amber is reserved for bright SII-rich
@@ -1301,7 +1301,7 @@ class PerfectPalettePicker(QWidget):
                 # original Dynamic Inverse receives in PPP. Keep memory
                 # bounded by scanning one stripe at a time.
                 di_max = 1.0
-                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8"):
+                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9"):
                     di_max = 1e-6
                     for p0 in range(0, height, rows):
                         p1 = min(height, p0 + rows)
@@ -1387,7 +1387,7 @@ class PerfectPalettePicker(QWidget):
                     )
                     scale = Y2 / target_Y
                     chroma = 0.75 - 0.08 * cool
-                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8"):
+                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9"):
                         if name == "Pastel Bordeaux & Or V6":
                             # V6 unchanged: global red dominance with
                             # extra DI preserved on bright SII structures.
@@ -1437,8 +1437,14 @@ class PerfectPalettePicker(QWidget):
                                 * (1.0 - 0.90 * cool)
                                 * (1.0 - 0.78 * sii_detail)
                             )
+                            # V9 raises V5's contribution ONLY where Ha is
+                            # diffuse; V8's coefficients are left intact.
+                            ha_weight = (
+                                0.50 if name == "Pastel Bordeaux & Or V9"
+                                else 0.40
+                            )
                             mix_v5 = np.clip(
-                                0.43 + 0.40 * ha_diffuse
+                                0.43 + ha_weight * ha_diffuse
                                 - 0.45 * sii_detail + 0.45 * cool,
                                 0.0, 1.0,
                             )
@@ -1461,6 +1467,50 @@ class PerfectPalettePicker(QWidget):
                                 Y2 + chroma * (tb * scale - Y2), 0.0, 1.0
                             )
                         )
+                        if name == "Pastel Bordeaux & Or V9":
+                            # More punch than V8, but only in targeted warm
+                            # regions. No global saturation or OIII changes.
+                            # Local SII brightness/contrast lifts are bounded
+                            # and deliberately small, leaving room for Curves.
+                            gold_target = (
+                                smoothstep((S - 0.27) / 0.16)
+                                * smoothstep(
+                                    (S - 0.82 * H - 0.005) / 0.14
+                                )
+                                * (1.0 - 0.90 * cool) * (1.0 - cool)
+                            )
+                            rr = out_r[y0:y1]
+                            gg = out_g[y0:y1]
+                            bb = out_b[y0:y1]
+                            lum = (
+                                0.2126 * rr + 0.7152 * gg + 0.0722 * bb
+                            )
+                            saturation = (
+                                1.0 + 0.13 * ha_diffuse * (1.0 - cool)
+                                + 0.18 * gold_target
+                            )
+                            # Luminance-neutral amber hue adjustment.
+                            gold_delta = 0.18 * gold_target * lum
+                            # Gentle tonal S: darker low lights, slightly
+                            # brighter SII ridges, without spatial halos.
+                            local_tone = (
+                                0.033 * (lum - 0.27) * lum
+                                * (1.0 - lum)
+                                * (0.4 + 0.6 * gold_target)
+                            )
+                            gold_lift = 1.0 + 0.11 * gold_target
+                            rr[:] = (
+                                lum + saturation * (rr - lum)
+                                - 0.11 * gold_delta + local_tone
+                            ) * gold_lift
+                            gg[:] = (
+                                lum + saturation * (gg - lum)
+                                + 0.045 * gold_delta + local_tone
+                            ) * gold_lift
+                            bb[:] = (
+                                lum + saturation * (bb - lum)
+                                - 0.12 * gold_delta + local_tone
+                            ) * gold_lift
                     else:
                         # Preserve V5 formula exactly.
                         out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
