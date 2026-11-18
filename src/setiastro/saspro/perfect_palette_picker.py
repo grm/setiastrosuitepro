@@ -284,7 +284,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Dynamic Inverse Pastel", "Dynamic Inverse Pastel V2", "Fire & Ice",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1265,104 +1265,83 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Dynamic Inverse Pastel", "Dynamic Inverse Pastel V2", "Fire & Ice"):
-                # Derived from the WR134 Ha/OIII/SII source data.
-                # Process in stripes to bound temporary memory for 15k+ frames.
-                # DI supplies luminance/detail; relative emission excess selects
-                # the cool and gold colours without desaturating OIII by dimming.
+            if name in ("Pastel Bordeaux & Or", "Bordeaux & Bleu Acier"):
+                # WR134-calibrated experiments, based on the verified TIFF
+                # formulas. Channels arrive already statistically stretched
+                # when "Linear input" is selected in Perfect Palette Picker.
+                # Process in stripes to bound peak memory for large frames.
+                if name == "Pastel Bordeaux & Or":
+                    neutral = (1.23, 0.74, 0.55)
+                    red = (1.70, 0.53, 0.40)
+                    gold_color = (1.79, 1.08, 0.28)
+                    blue = (0.73, 0.92, 1.23)
+                    shade, gold_boost, cool_boost, chroma = 0.82, 0.90, 0.12, 0.72
+                else:
+                    neutral = (1.23, 0.74, 0.55)
+                    red = (1.70, 0.53, 0.40)
+                    gold_color = (1.79, 1.08, 0.28)
+                    blue = (0.60, 0.88, 1.19)
+                    shade, gold_boost, cool_boost, chroma = 0.81, 0.88, 0.05, 0.76
+
                 height, width = ha.shape[:2]
                 rows = max(1, min(height, 1_000_000 // max(1, width)))
                 out_r = np.empty((height, width), dtype=np.float32)
                 out_g = np.empty((height, width), dtype=np.float32)
                 out_b = np.empty((height, width), dtype=np.float32)
 
-                def smooth(x):
-                    x = np.clip(x, 0.0, 1.0)
-                    return x * x * (3.0 - 2.0 * x)
+                def smoothstep(v):
+                    v = np.clip(v, 0.0, 1.0)
+                    return v * v * (3.0 - 2.0 * v)
 
                 for y0 in range(0, height, rows):
-                    y1 = min(y0 + rows, height)
+                    y1 = min(height, y0 + rows)
                     H = np.clip(np.nan_to_num(ha[y0:y1]), 0.0, 1.0)
                     O = np.clip(np.nan_to_num(oo[y0:y1]), 0.0, 1.0)
                     S = np.clip(np.nan_to_num(si[y0:y1]), 0.0, 1.0)
-                    di_r, di_g, di_b = self._map_channels_or_special(
-                        "Dynamic Inverse", H, O, S
-                    )
-                    lum = (
+
+                    # Exactly the original Dynamic Inverse luminance; retain
+                    # the fine spatial details in faint OIII filaments.
+                    gate_x = np.clip(1.0 - S, 1e-6, 1.0)
+                    gate = gate_x ** (1.0 - gate_x)
+                    di_r = (1.0 - O) * S + O * H
+                    di_g = (1.0 - gate) * S + gate * O
+                    di_b = gate * O + (1.0 - gate) * (0.5 * O)
+                    Y = (
                         0.2126 * di_r + 0.7152 * di_g + 0.0722 * di_b
                     )
 
-                    # PPP's mono statistical stretch targets median 0.25.
-                    # Absolute excess prevents globally recoloring the sky.
-                    warm = 0.26 + 0.74 * smooth((H - 0.18) / 0.25)
-                    gold = (
-                        smooth((S - 0.225) / 0.20)
-                        * smooth((S - 0.83 * H - 0.018) / 0.14)
-                    )
-                    cool = smooth(
+                    warm = 0.26 + 0.74 * smoothstep((H - 0.18) / 0.25)
+                    cool = smoothstep(
                         (O - 0.90 * H - 0.035) / (0.17 + 0.12 * H)
                     )
-
-                    # Low-saturation, luminance-normalized targets:
-                    # burgundy Ha, gold SII, pale steel-blue OIII.
-                    if name == "Dynamic Inverse Pastel":
-                        # Keep the previous Pastel tint exactly unchanged.
-                        tr = (1.0 - warm) * 1.08 + warm * 1.50
-                        tg = (1.0 - warm) * 0.94 + warm * 0.74
-                        tb = (1.0 - warm) * 0.92 + warm * 0.67
-                        tr = (1.0 - gold) * tr + gold * 1.47
-                        tg = (1.0 - gold) * tg + gold * 1.13
-                        tb = (1.0 - gold) * tb + gold * 0.42
-                    elif name == "Dynamic Inverse Pastel V2":
-                        # Keep V1 and its OIII selection intact; gently warm
-                        # the Ha/SII target toward red and honey-gold.
-                        tr = (1.0 - warm) * 1.10 + warm * 1.56
-                        tg = (1.0 - warm) * 0.90 + warm * 0.68
-                        tb = (1.0 - warm) * 0.82 + warm * 0.54
-                        tr = (1.0 - gold) * tr + gold * 1.48
-                        tg = (1.0 - gold) * tg + gold * 1.16
-                        tb = (1.0 - gold) * tb + gold * 0.36
-                    else:
-                        # Fire & Ice V8: stronger red/green and red/blue
-                        # separation to prevent pink/salmon Ha backgrounds.
-                        tr = (1.0 - warm) * 1.18 + warm * 1.62
-                        tg = (1.0 - warm) * 0.84 + warm * 0.58
-                        tb = (1.0 - warm) * 0.58 + warm * 0.28
-                        tr = (1.0 - gold) * tr + gold * 1.45
-                        tg = (1.0 - gold) * tg + gold * 1.08
-                        tb = (1.0 - gold) * tb + gold * 0.38
-                    tr = (1.0 - cool) * tr + cool * 0.78
-                    tg = (1.0 - cool) * tg + cool * 0.93
-                    tb = (1.0 - cool) * tb + cool * 1.19
-
-                    tint_luma = np.maximum(
-                        0.2126 * tr + 0.7152 * tg + 0.0722 * tb,
-                        1e-6,
+                    gold = (
+                        smoothstep((S - 0.24) / 0.19)
+                        * smoothstep((S - 0.80 * H - 0.015) / 0.14)
+                        * (1.0 - 0.70 * cool)
                     )
-                    scale = lum / tint_luma
-                    strength = 0.80
-                    fi_r = lum + strength * (tr * scale - lum)
-                    fi_g = lum + strength * (tg * scale - lum)
-                    fi_b = lum + strength * (tb * scale - lum)
 
-                    if name == "Dynamic Inverse Pastel":
-                        # Experimental pastel recolour blended with 35%
-                        # original DI; preserves its subtle texture.
-                        out_r[y0:y1] = 0.35 * di_r + 0.65 * fi_r
-                        out_g[y0:y1] = 0.35 * di_g + 0.65 * fi_g
-                        out_b[y0:y1] = 0.35 * di_b + 0.65 * fi_b
-                    elif name == "Dynamic Inverse Pastel V2":
-                        # More warm recolouring than V1 while preserving a
-                        # little more of DI's soft OIII blue channel.
-                        out_r[y0:y1] = 0.28 * di_r + 0.72 * fi_r
-                        out_g[y0:y1] = 0.32 * di_g + 0.68 * fi_g
-                        out_b[y0:y1] = 0.38 * di_b + 0.62 * fi_b
-                    else:
-                        # Distinct Fire & Ice experiment: stronger separation
-                        # while preserving the same underlying DI luminance.
-                        out_r[y0:y1] = fi_r
-                        out_g[y0:y1] = fi_g
-                        out_b[y0:y1] = fi_b
+                    # Choose chromaticity independently of luminance:
+                    # diffuse burgundy, locally brighter SII gold and
+                    # restrained pastel blue in OIII-rich regions.
+                    tr = neutral[0] + warm * (red[0] - neutral[0])
+                    tg = neutral[1] + warm * (red[1] - neutral[1])
+                    tb = neutral[2] + warm * (red[2] - neutral[2])
+                    tr = tr + gold * (gold_color[0] - tr)
+                    tg = tg + gold * (gold_color[1] - tg)
+                    tb = tb + gold * (gold_color[2] - tb)
+                    tr = tr + cool * (blue[0] - tr)
+                    tg = tg + cool * (blue[1] - tg)
+                    tb = tb + cool * (blue[2] - tb)
+
+                    # Preserve Dynamic Inverse's detail, darken diffuse Ha
+                    # slightly and lift SII filaments without a harsh RGB
+                    # saturation increase. PPP handles final normalization.
+                    Y2 = Y * (shade + gold_boost * gold + cool_boost * cool)
+                    tint_Y = 0.2126 * tr + 0.7152 * tg + 0.0722 * tb
+                    scale = Y2 / np.maximum(tint_Y, 1e-6)
+                    out_r[y0:y1] = Y2 + chroma * (tr * scale - Y2)
+                    out_g[y0:y1] = Y2 + chroma * (tg * scale - Y2)
+                    out_b[y0:y1] = Y2 + chroma * (tb * scale - Y2)
 
                 return (
                     np.clip(out_r, 0.0, 1.0, out=out_r),
