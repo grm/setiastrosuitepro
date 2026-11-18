@@ -117,7 +117,27 @@ class PaletteAdjustDialog(QDialog):
         btns.addWidget(accept); btns.addWidget(reset); btns.addWidget(discard)
         vlayout.addLayout(btns)
 
+        # Open at a useful size instead of Qt's small default dialog size.
+        self._set_initial_window_size()
         self._update_preview()
+        # The viewport geometry is only reliable once exec() shows the dialog.
+        QTimer.singleShot(0, self._fit_to_preview)
+
+    def _set_initial_window_size(self):
+        # Use the screen containing Perfect Palette Picker (multi-monitor
+        # setups) and leave room for panels, window borders and the taskbar.
+        screen = self.owner.screen() if self.owner is not None else self.screen()
+        if screen is None:
+            self.resize(1400, 850)
+            return
+        available = screen.availableGeometry()
+        width = min(1800, max(1, int(available.width() * 0.88)))
+        height = min(1100, max(1, int(available.height() * 0.86)))
+        self.resize(width, height)
+        self.move(
+            available.x() + (available.width() - width) // 2,
+            available.y() + (available.height() - height) // 2,
+        )
 
     def _on_slider_change(self, _):
         self.ha_factor   = self._ha_slider.value()/100.0
@@ -173,7 +193,7 @@ class PaletteAdjustDialog(QDialog):
         self.preview_label.resize(scaled.size())
 
     def _change_zoom(self, factor: float):
-        self.zoom_factor = max(0.1, min(10.0, self.zoom_factor * factor))
+        self.zoom_factor = max(0.01, min(10.0, self.zoom_factor * factor))
         self._rescale_pixmap()
 
     def _fit_to_preview(self):
@@ -184,7 +204,7 @@ class PaletteAdjustDialog(QDialog):
         if pm.width() <= 0 or pm.height() <= 0:
             return
         k = min(vp.width() / pm.width(), vp.height() / pm.height())
-        self.zoom_factor = max(0.1, min(10.0, k))
+        self.zoom_factor = max(0.01, min(10.0, k))
         self._rescale_pixmap()
 
 
