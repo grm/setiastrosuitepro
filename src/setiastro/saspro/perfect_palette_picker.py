@@ -176,7 +176,7 @@ class PaletteAdjustDialog(QDialog):
         if b is not None: img[...,2] = b
         m = float(img.max()) or 1.0
         img = np.clip(img/m, 0.0, 1.0)
-        if self.palette_name == "Pastel Bordeaux & Or V12":
+        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
             self.owner._apply_v12_selective_color(img)
 
         qimg = self.owner._to_qimage(img)
@@ -238,7 +238,7 @@ class PaletteAdjustDialog(QDialog):
 
         m = float(final.max()) or 1.0
         final = np.clip(final/m, 0.0, 1.0)
-        if self.palette_name == "Pastel Bordeaux & Or V12":
+        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
             self.owner._apply_v12_selective_color(final)
 
         self.adjusted_image.emit(final)
@@ -308,7 +308,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -982,7 +982,7 @@ class PerfectPalettePicker(QWidget):
             g = np.clip(np.nan_to_num(g), 0, 1)
             b = np.clip(np.nan_to_num(b), 0, 1)
             rgb = np.stack([r, g, b], axis=2).astype(np.float32)
-            if name == "Pastel Bordeaux & Or V12":
+            if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
                 # Thumbnails use the same normalized colour correction
                 # as the final view rather than showing uncorrected V11.
                 rgb /= (float(rgb.max()) or 1.0)
@@ -1175,7 +1175,7 @@ class PerfectPalettePicker(QWidget):
 
         mx = float(rgb.max()) or 1.0
         self.final = (rgb / mx).astype(np.float32)
-        if pal == "Pastel Bordeaux & Or V12":
+        if pal in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
             self._apply_v12_selective_color(self.final)
 
         # Fit only when there wasn't an existing preview yet
@@ -1284,7 +1284,8 @@ class PerfectPalettePicker(QWidget):
         # V12 uses precisely V11's narrowband colour construction, followed
         # by two selective-colour passes *after* PPP's RGB normalization.
         # Do not bake the adjustments into the Ha/OIII/SII math.
-        if name == "Pastel Bordeaux & Or V12":
+        is_v13 = (name == "Pastel Bordeaux & Or V13")
+        if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
             name = "Pastel Bordeaux & Or V11"
 
         # Record TRUE presence before substitution masks it, so Foraxx can
@@ -1359,6 +1360,34 @@ class PerfectPalettePicker(QWidget):
                 out_g = np.empty((height, width), dtype=np.float32)
                 out_b = np.empty((height, width), dtype=np.float32)
 
+                # V13 stabilizes the colour-decision masks, never the
+                # astronomical channels contributing native fine detail.
+                # The Gaussian kernel radius is 6 px at sigma=1.5 (4 sigma).
+                # Six-pixel halos make each stripe match full-frame filtering
+                # with no visible joins, even on 15k+ pixel-wide images.
+                if is_v13:
+                    from scipy.ndimage import gaussian_filter
+
+                    def mask_band(y0, y1):
+                        halo = 6
+                        top = max(0, y0 - halo)
+                        bottom = min(height, y1 + halo)
+                        Hpatch = np.clip(
+                            np.nan_to_num(ha[top:bottom]), 0.0, 1.0
+                        )
+                        Spatch = np.clip(
+                            np.nan_to_num(si[top:bottom]), 0.0, 1.0
+                        )
+                        ys = slice(y0 - top, y1 - top)
+                        return (
+                            gaussian_filter(
+                                Hpatch, sigma=1.5, mode="reflect"
+                            )[ys],
+                            gaussian_filter(
+                                Spatch, sigma=1.5, mode="reflect"
+                            )[ys],
+                        )
+
                 # For V6, match the separate global normalization that the
                 # original Dynamic Inverse receives in PPP. Keep memory
                 # bounded by scanning one stripe at a time.
@@ -1394,6 +1423,11 @@ class PerfectPalettePicker(QWidget):
                     H = np.clip(np.nan_to_num(ha[y0:y1]), 0.0, 1.0)
                     O = np.clip(np.nan_to_num(oo[y0:y1]), 0.0, 1.0)
                     S = np.clip(np.nan_to_num(si[y0:y1]), 0.0, 1.0)
+                    # Only mask inputs are smoothed. DI luminance and RGB
+                    # below continue to use original H/O/S pixels.
+                    mask_H, mask_S = (
+                        mask_band(y0, y1) if is_v13 else (H, S)
+                    )
 
                     # Reproduce original Dynamic Inverse luminance on the
                     # stretched narrowband channels to retain OIII texture.
@@ -1403,23 +1437,36 @@ class PerfectPalettePicker(QWidget):
                     di_g = (1.0 - gate) * S + gate * O
                     di_b = (0.5 + 0.5 * gate) * O
                     Y = 0.2126 * di_r + 0.7152 * di_g + 0.0722 * di_b
+                    mask_Y = Y
+                    if is_v13:
+                        m_gate_x = np.clip(1.0 - mask_S, 1e-6, 1.0)
+                        m_gate = m_gate_x ** (1.0 - m_gate_x)
+                        mask_Y = (
+                            0.2126 * ((1.0 - O) * mask_S + O * mask_H)
+                            + 0.7152 * (
+                                (1.0 - m_gate) * mask_S + m_gate * O
+                            )
+                            + 0.0722 * ((0.5 + 0.5 * m_gate) * O)
+                        )
 
-                    warm = 0.35 + 0.65 * smoothstep((H - 0.13) / 0.29)
+                    # V13: use stable H/S only in colour weight functions.
+                    warm = 0.35 + 0.65 * smoothstep((mask_H - 0.13) / 0.29)
                     cool = smoothstep(
-                        (O - 0.90 * H - 0.035) / (0.17 + 0.12 * H)
+                        (O - 0.90 * mask_H - 0.035)
+                        / (0.17 + 0.12 * mask_H)
                     )
                     # V4's broad copper mask affected ~28.5% of WR134.
                     # Retain the spatial pattern at just 18% strength.
                     copper_mask = 0.18 * (
-                        smoothstep((H - 0.18) / 0.22)
-                        * smoothstep((S - 0.14) / 0.16)
+                        smoothstep((mask_H - 0.18) / 0.22)
+                        * smoothstep((mask_S - 0.14) / 0.16)
                         * (1.0 - 0.55 * cool)
                     )
                     # Keep real SII highlights, suppress faint diffuse gold.
                     gold_base = (
-                        smoothstep((S - 0.30) / 0.16)
-                        * smoothstep((S - 0.95 * H - 0.005) / 0.10)
-                        * smoothstep((Y - 0.18) / 0.12)
+                        smoothstep((mask_S - 0.30) / 0.16)
+                        * smoothstep((mask_S - 0.95 * mask_H - 0.005) / 0.10)
+                        * smoothstep((mask_Y - 0.18) / 0.12)
                         * (1.0 - 0.90 * cool)
                     )
                     gold_mask = gold_base ** 1.7
@@ -1490,12 +1537,12 @@ class PerfectPalettePicker(QWidget):
                             # recolouring the entire nebula. OIII remains
                             # mostly V5 to avoid bringing back diffuse cyan.
                             sii_detail = (
-                                smoothstep((S - 0.22) / 0.18)
-                                * smoothstep((S - 0.73 * H - 0.005) / 0.18)
+                                smoothstep((mask_S - 0.22) / 0.18)
+                                * smoothstep((mask_S - 0.73 * mask_H - 0.005) / 0.18)
                                 * (1.0 - 0.88 * cool)
                             )
                             ha_diffuse = (
-                                smoothstep((H - 0.20) / 0.24)
+                                smoothstep((mask_H - 0.20) / 0.24)
                                 * (1.0 - 0.90 * cool)
                                 * (1.0 - 0.78 * sii_detail)
                             )
@@ -1605,6 +1652,11 @@ class PerfectPalettePicker(QWidget):
                         H = np.clip(np.nan_to_num(ha[y0:y1]), 0.0, 1.0)
                         O = np.clip(np.nan_to_num(oo[y0:y1]), 0.0, 1.0)
                         S = np.clip(np.nan_to_num(si[y0:y1]), 0.0, 1.0)
+                        if is_v13:
+                            # All quantities in this loop are mask inputs.
+                            # Reuse smoothed H/S here, keeping the computed
+                            # RGB planes from the first loop untouched.
+                            H, S = mask_band(y0, y1)
                         x = np.clip(1.0 - S, 1e-6, 1.0)
                         gate = x ** (1.0 - x)
                         di_r = (1.0 - O) * S + O * H
