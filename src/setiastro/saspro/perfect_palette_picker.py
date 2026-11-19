@@ -176,6 +176,8 @@ class PaletteAdjustDialog(QDialog):
         if b is not None: img[...,2] = b
         m = float(img.max()) or 1.0
         img = np.clip(img/m, 0.0, 1.0)
+        if self.palette_name == "Pastel Bordeaux & Or V12":
+            self.owner._apply_v12_selective_color(img)
 
         qimg = self.owner._to_qimage(img)
         self._adj_pixmap = QPixmap.fromImage(qimg)
@@ -236,6 +238,8 @@ class PaletteAdjustDialog(QDialog):
 
         m = float(final.max()) or 1.0
         final = np.clip(final/m, 0.0, 1.0)
+        if self.palette_name == "Pastel Bordeaux & Or V12":
+            self.owner._apply_v12_selective_color(final)
 
         self.adjusted_image.emit(final)
         self.accept()
@@ -304,7 +308,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -978,6 +982,11 @@ class PerfectPalettePicker(QWidget):
             g = np.clip(np.nan_to_num(g), 0, 1)
             b = np.clip(np.nan_to_num(b), 0, 1)
             rgb = np.stack([r, g, b], axis=2).astype(np.float32)
+            if name == "Pastel Bordeaux & Or V12":
+                # Thumbnails use the same normalized colour correction
+                # as the final view rather than showing uncorrected V11.
+                rgb /= (float(rgb.max()) or 1.0)
+                self._apply_v12_selective_color(rgb)
 
             # scale the thumbnail to EXACTLY the button icon size first
             pm = QPixmap.fromImage(self._to_qimage(rgb)).scaled(
@@ -1104,6 +1113,51 @@ class PerfectPalettePicker(QWidget):
 
         return ha, oo, si
 
+    def _apply_v12_selective_color(self, rgb: np.ndarray) -> np.ndarray:
+        """Apply the user's two WR134 selective-red passes to normalized RGB.
+
+        Reuse the exact Selective Color Correction mask and adjustment code:
+        HSV hue quantization, red preset 340-15 deg, hard V gating, RGB then
+        luminance then L-preserving chroma. The second mask is recomputed
+        *after* the first pass, just like two successive UI applications.
+        Called after PPP global normalization, including slider previews.
+        Works on bounded stripes to limit RAM on 15k x 15k images.
+        """
+        from setiastro.saspro.selective_color import (
+            _hue_mask, _apply_selective_adjustments,
+        )
+
+        height, width = rgb.shape[:2]
+        stripe_rows = max(1, min(height, 400_000 // max(width, 1)))
+        # (V min, V max, delta R, delta B, delta luminance, delta chroma)
+        passes = (
+            (0.40, 1.00, -0.018, 0.019, -0.004, -0.052),
+            (0.00, 0.25,  0.000, 0.000,  0.005,  0.092),
+        )
+
+        for y0 in range(0, height, stripe_rows):
+            tile = rgb[y0:min(height, y0 + stripe_rows)]
+            for min_light, max_light, red, blue, luminance, chroma in passes:
+                mask = _hue_mask(
+                    tile,
+                    ranges_deg=[(340.0, 360.0), (0.0, 15.0)],
+                    min_chroma=0.05,
+                    min_light=min_light,
+                    max_light=max_light,
+                    smooth_deg=10.0,
+                    invert_range=False,
+                    soft=False,
+                )
+                adjusted = _apply_selective_adjustments(
+                    tile, mask,
+                    cyan=0.0, magenta=0.0, yellow=0.0,
+                    r=red, g=0.0, b=blue,
+                    lum=luminance, chroma=chroma, sat=0.0, con=0.0,
+                    intensity=1.0, use_chroma_mode=True,
+                )
+                tile[:] = adjusted
+        return rgb
+
     def _generate_for_palette(self, pal: str):
         ha, oo, si = self._prepared_channels()
         has_narrowband = sum(x is not None for x in (ha, oo, si))
@@ -1121,6 +1175,8 @@ class PerfectPalettePicker(QWidget):
 
         mx = float(rgb.max()) or 1.0
         self.final = (rgb / mx).astype(np.float32)
+        if pal == "Pastel Bordeaux & Or V12":
+            self._apply_v12_selective_color(self.final)
 
         # Fit only when there wasn't an existing preview yet
         first = (self._base_pm is None)
@@ -1225,6 +1281,12 @@ class PerfectPalettePicker(QWidget):
         return x ** (1.0 - x)
 
     def _map_channels_or_special(self, name, ha, oo, si):
+        # V12 uses precisely V11's narrowband colour construction, followed
+        # by two selective-colour passes *after* PPP's RGB normalization.
+        # Do not bake the adjustments into the Ha/OIII/SII math.
+        if name == "Pastel Bordeaux & Or V12":
+            name = "Pastel Bordeaux & Or V11"
+
         # Record TRUE presence before substitution masks it, so Foraxx can
         # pick real-tricolor vs bicolor correctly.
         has_real_si = si is not None
