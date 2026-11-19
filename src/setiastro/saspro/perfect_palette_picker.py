@@ -304,7 +304,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1285,7 +1285,7 @@ class PerfectPalettePicker(QWidget):
                     b  = oo
                     return r, g, b
                 return basic["SHO"]
-            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10"):
+            if name in ("Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11"):
                 # V5: WR134 full-resolution calibrated pastel base.
                 # Diffuse Ha stays deep red; weak SII does not turn the
                 # whole nebula copper. Amber is reserved for bright SII-rich
@@ -1301,7 +1301,7 @@ class PerfectPalettePicker(QWidget):
                 # original Dynamic Inverse receives in PPP. Keep memory
                 # bounded by scanning one stripe at a time.
                 di_max = 1.0
-                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10"):
+                if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11"):
                     di_max = 1e-6
                     for p0 in range(0, height, rows):
                         p1 = min(height, p0 + rows)
@@ -1387,7 +1387,7 @@ class PerfectPalettePicker(QWidget):
                     )
                     scale = Y2 / target_Y
                     chroma = 0.75 - 0.08 * cool
-                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10"):
+                    if name in ("Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11"):
                         if name == "Pastel Bordeaux & Or V6":
                             # V6 unchanged: global red dominance with
                             # extra DI preserved on bright SII structures.
@@ -1517,8 +1517,8 @@ class PerfectPalettePicker(QWidget):
                         out_g[y0:y1] = Y2 + chroma * (tg * scale - Y2)
                         out_b[y0:y1] = Y2 + chroma * (tb * scale - Y2)
 
-                if name == "Pastel Bordeaux & Or V10":
-                    # V10 is based on V8, not V9: no aggressive Ha-wide
+                if name in ("Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11"):
+                    # V10/V11 are based on V8, not V9: no aggressive Ha-wide
                     # saturation. Apply a luminosity-preserving amber
                     # recolour ONLY to SII-positive filaments, then a small
                     # tonal lift there and restrained bright-Ha compression.
@@ -1570,7 +1570,10 @@ class PerfectPalettePicker(QWidget):
                             * smoothstep((S - 0.77 * H - 0.005) / 0.18)
                             * smoothstep((di_y - 0.19) / 0.14)
                             * (1.0 - 0.90 * cool)
-                        ) ** 1.3
+                        ) ** (
+                            1.45 if name == "Pastel Bordeaux & Or V11"
+                            else 1.3
+                        )
                         # Reinforce only the zones already warm in genuine DI
                         # rather than painting a new gold mask over OIII.
                         di_gold = (
@@ -1591,26 +1594,44 @@ class PerfectPalettePicker(QWidget):
                         lum = (
                             0.2126 * rr + 0.7152 * gg + 0.0722 * bb
                         )
-                        k = 0.90 * gold
+                        k = (
+                            0.72 if name == "Pastel Bordeaux & Or V11"
+                            else 0.90
+                        ) * gold
                         bright_ha = (
                             ha_diffuse * (1.0 - gold) * (1.0 - cool)
                             * smoothstep((lum - 0.24) / 0.30)
                         )
-                        # Warm reds become less shrill; selected SII crêtes
-                        # become more luminous and more distinctly amber.
-                        tone = 1.0 - 0.075 * bright_ha + 0.19 * gold
+                        if name == "Pastel Bordeaux & Or V11":
+                            # Protect faint diffuse areas from an overly
+                            # dark appearance. This mask follows luminance,
+                            # not screen position, and changes smoothly.
+                            background = 1.0 - smoothstep(
+                                (lum - 0.16) / 0.18
+                            )
+                            k *= 1.0 - 0.55 * background
+                            bright_ha *= 1.0 - 0.65 * background
+                            # Tamer SII recolouring, gentler Ha compression.
+                            tone = (
+                                1.0 - 0.045 * bright_ha + 0.16 * gold
+                            )
+                            background_lift = 1.0 + 0.06 * background
+                        else:
+                            # V10 remains identical to the approved test.
+                            tone = 1.0 - 0.075 * bright_ha + 0.19 * gold
+                            background_lift = 1.0
                         rr[:] = (
                             (1.0 - k) * rr
                             + k * lum * (amber_target[0] / amber_y)
-                        ) * tone
+                        ) * tone * background_lift
                         gg[:] = (
                             (1.0 - k) * gg
                             + k * lum * (amber_target[1] / amber_y)
-                        ) * tone
+                        ) * tone * background_lift
                         bb[:] = (
                             (1.0 - k) * bb
                             + k * lum * (amber_target[2] / amber_y)
-                        ) * tone
+                        ) * tone * background_lift
 
                 return (
                     np.clip(out_r, 0.0, 1.0, out=out_r),
