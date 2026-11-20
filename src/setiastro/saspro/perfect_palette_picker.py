@@ -175,7 +175,12 @@ class PaletteAdjustDialog(QDialog):
         if g is not None: img[...,1] = g
         if b is not None: img[...,2] = b
         m = float(img.max()) or 1.0
-        img = np.clip(img/m, 0.0, 1.0)
+        # V16 already contains the exact globally normalized DI luminance.
+        # Avoid normalizing it a second time (which would change that Y).
+        img = np.clip(
+            img if self.palette_name == "Pastel Bordeaux & Or V16"
+            else img / m, 0.0, 1.0,
+        )
         if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
             self.owner._apply_v12_selective_color(img)
             if self.palette_name in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
@@ -241,7 +246,10 @@ class PaletteAdjustDialog(QDialog):
         if b is not None: final[...,2] = b
 
         m = float(final.max()) or 1.0
-        final = np.clip(final/m, 0.0, 1.0)
+        final = np.clip(
+            final if self.palette_name == "Pastel Bordeaux & Or V16"
+            else final / m, 0.0, 1.0,
+        )
         if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
             self.owner._apply_v12_selective_color(final)
             if self.palette_name in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
@@ -316,7 +324,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15", "Pastel Bordeaux & Or V16", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -1320,7 +1328,9 @@ class PerfectPalettePicker(QWidget):
         rgb = np.stack([r,g,b], axis=2).astype(np.float32)
 
         mx = float(rgb.max()) or 1.0
-        self.final = (rgb / mx).astype(np.float32)
+        self.final = (
+            rgb if pal == "Pastel Bordeaux & Or V16" else rgb / mx
+        ).astype(np.float32)
         if pal in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
             self._apply_v12_selective_color(self.final)
             if pal in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
@@ -1430,6 +1440,163 @@ class PerfectPalettePicker(QWidget):
         x = np.clip(np.nan_to_num(x), 1e-6, 1.0)
         return x ** (1.0 - x)
 
+    def _map_dynamic_inverse_v16(self, ha, oo, si):
+        """V16: DI luminance + smoothly guided burgundy, copper and soft blue.
+
+        This is NOT an evolution of V5-V15's recolouring machinery.
+        It starts from the exact Dynamic Inverse formula and keeps each
+        original luminance value, rather than boosting SII structures.
+        Only colour-decision weights are Gaussian-smoothed (sigma=1.5 px).
+
+        Use a two-pass bounded-stripe calculation: first find the same
+        global normalization as DI, then calculate colours with a 6-pixel
+        halo (4 sigma). No full-frame temporary RGB/HSV/smoothed maps.
+        """
+
+        from scipy.ndimage import gaussian_filter
+
+        height, width = ha.shape[:2]
+        halo = 6
+        rows = max(halo, min(height, max(1, 400_000 // max(width, 1))))
+        out_r = np.empty((height, width), dtype=np.float32)
+        out_g = np.empty_like(out_r)
+        out_b = np.empty_like(out_r)
+
+        def dynamic_band(top, bottom):
+            H = np.clip(np.nan_to_num(ha[top:bottom]), 0.0, 1.0)
+            O = np.clip(np.nan_to_num(oo[top:bottom]), 0.0, 1.0)
+            S = np.clip(np.nan_to_num(si[top:bottom]), 0.0, 1.0)
+            gate_x = np.clip(1.0 - S, 1e-6, 1.0)
+            gate = gate_x ** (1.0 - gate_x)
+            # These are exactly Dynamic Inverse's three RGB expressions.
+            dr = (1.0 - O) * S + O * H
+            dg = (1.0 - gate) * S + gate * O
+            db = (0.5 + 0.5 * gate) * O
+            return H, O, S, dr, dg, db
+
+        di_max = 1e-6
+        for y0 in range(0, height, rows):
+            y1 = min(height, y0 + rows)
+            _, _, _, dr, dg, db = dynamic_band(y0, y1)
+            di_max = max(
+                di_max, float(np.max(dr)),
+                float(np.max(dg)), float(np.max(db)),
+            )
+
+        def softstep(x):
+            v = np.clip(x, 0.0, 1.0)
+            return v * v * (3.0 - 2.0 * v)
+
+        def normalized_tint(r, g, b):
+            luminance = 0.2126*r + 0.7152*g + 0.0722*b
+            return (r/luminance, g/luminance, b/luminance)
+
+        burgundy = normalized_tint(1.52, 0.48, 0.52)
+        copper = normalized_tint(1.53, 0.75, 0.39)
+        gold_tint = normalized_tint(1.37, 0.94, 0.41)
+        blue = normalized_tint(0.79, 0.95, 1.22)
+
+        for y0 in range(0, height, rows):
+            y1 = min(height, y0 + rows)
+            top = max(0, y0 - halo)
+            bottom = min(height, y1 + halo)
+            H, O, S, dr, dg, db = dynamic_band(top, bottom)
+            center = slice(y0 - top, y1 - top)
+
+            # The DI colour and pixel luminance remain unsmoothed.
+            dr /= di_max
+            dg /= di_max
+            db /= di_max
+            lum = (
+                0.2126 * dr[center]
+                + 0.7152 * dg[center]
+                + 0.0722 * db[center]
+            )
+
+            # Smooth ONLY the quantities guiding our colour choices.
+            red_s = gaussian_filter(dr, sigma=1.5, mode="reflect")[center]
+            green_s = gaussian_filter(dg, sigma=1.5, mode="reflect")[center]
+            blue_s = gaussian_filter(db, sigma=1.5, mode="reflect")[center]
+            h_s = gaussian_filter(H, sigma=1.5, mode="reflect")[center]
+            o_s = gaussian_filter(O, sigma=1.5, mode="reflect")[center]
+            s_s = gaussian_filter(S, sigma=1.5, mode="reflect")[center]
+            smooth_lum = (
+                0.2126 * red_s
+                + 0.7152 * green_s
+                + 0.0722 * blue_s
+            )
+
+            # Broad, continuous Ha/OIII balance instead of an abrupt SII
+            # decision. OIII-dominant structures retain a steel-blue hue.
+            cool = (
+                softstep((o_s - h_s - 0.017) / 0.13)
+                * softstep((o_s - 0.15) / 0.23)
+            )
+            warm = (
+                softstep((h_s - o_s + 0.07) / 0.18)
+                * softstep((h_s - 0.11) / 0.22)
+                * (1.0 - 0.60 * cool)
+            )
+            gold = (
+                softstep((s_s - 0.72*h_s - 0.012) / 0.22)
+                * softstep((s_s - 0.19) / 0.23)
+                * softstep((smooth_lum - 0.21) / 0.30)
+                * warm
+            )
+            copper_mask = (
+                softstep((s_s - 0.67*h_s - 0.005) / 0.23)
+                * softstep((s_s - 0.15) / 0.28)
+                * warm * (1.0 - 0.70 * gold)
+            )
+            warm_weight = (
+                warm * softstep((smooth_lum - 0.07) / 0.22)
+                * (1.0 - 0.72 * gold)
+            )
+            diffuse_cyan = (
+                softstep(
+                    (np.maximum(green_s, blue_s) - red_s + 0.015) / 0.16
+                ) * (1.0 - 0.85 * cool)
+            )
+
+            # Neutralize part of the diffuse cyan, without flattening the
+            # OIII blue. These changes are purely chromatic: all target
+            # colours have unit luminance.
+            neutral = 0.24 * diffuse_cyan
+            rr = lum + (dr[center] - lum) * (1.0 - neutral)
+            gg = lum + (dg[center] - lum) * (1.0 - neutral)
+            bb = lum + (db[center] - lum) * (1.0 - neutral)
+            for weight, tint in (
+                (0.48 * warm_weight, burgundy),
+                (0.25 * copper_mask, copper),
+                (0.36 * gold, gold_tint),
+                (0.38 * cool, blue),
+            ):
+                inv = 1.0 - weight
+                rr = inv * rr + lum * weight * tint[0]
+                gg = inv * gg + lum * weight * tint[1]
+                bb = inv * bb + lum * weight * tint[2]
+
+            # Hue stays in-gamut by compressing CHROMA towards the native
+            # luminance. Independent channel clipping would alter detail.
+            lo = np.minimum(rr, np.minimum(gg, bb))
+            hi = np.maximum(rr, np.maximum(gg, bb))
+            low_gain = np.ones_like(lum)
+            high_gain = np.ones_like(lum)
+            np.divide(
+                lum, np.maximum(lum - lo, 1e-12),
+                out=low_gain, where=(lo < 0.0),
+            )
+            np.divide(
+                1.0 - lum, np.maximum(hi - lum, 1e-12),
+                out=high_gain, where=(hi > 1.0),
+            )
+            gain = np.minimum(1.0, np.minimum(low_gain, high_gain))
+            out_r[y0:y1] = np.clip(lum + (rr - lum) * gain, 0.0, 1.0)
+            out_g[y0:y1] = np.clip(lum + (gg - lum) * gain, 0.0, 1.0)
+            out_b[y0:y1] = np.clip(lum + (bb - lum) * gain, 0.0, 1.0)
+
+        return out_r, out_g, out_b
+
     def _map_channels_or_special(self, name, ha, oo, si):
         # V12 uses precisely V11's narrowband colour construction, followed
         # by two selective-colour passes *after* PPP's RGB normalization.
@@ -1481,6 +1648,8 @@ class PerfectPalettePicker(QWidget):
             return basic[name]
 
         try:
+            if name == "Pastel Bordeaux & Or V16":
+                return self._map_dynamic_inverse_v16(ha, oo, si)
             if name == "Realistic1":
                 r = (ha + si)/2 if (ha is not None and si is not None) else (ha if ha is not None else 0)
                 g = 0.3*(ha if ha is not None else 0) + 0.7*(oo if oo is not None else 0)
