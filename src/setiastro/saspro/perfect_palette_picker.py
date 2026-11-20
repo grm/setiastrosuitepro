@@ -176,10 +176,12 @@ class PaletteAdjustDialog(QDialog):
         if b is not None: img[...,2] = b
         m = float(img.max()) or 1.0
         img = np.clip(img/m, 0.0, 1.0)
-        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
+        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
             self.owner._apply_v12_selective_color(img)
-            if self.palette_name == "Pastel Bordeaux & Or V14":
+            if self.palette_name in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
                 self.owner._apply_v14_chroma(img)
+                if self.palette_name == "Pastel Bordeaux & Or V15":
+                    self.owner._apply_v15_low_signal_balance(img)
 
         qimg = self.owner._to_qimage(img)
         self._adj_pixmap = QPixmap.fromImage(qimg)
@@ -240,10 +242,12 @@ class PaletteAdjustDialog(QDialog):
 
         m = float(final.max()) or 1.0
         final = np.clip(final/m, 0.0, 1.0)
-        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
+        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
             self.owner._apply_v12_selective_color(final)
-            if self.palette_name == "Pastel Bordeaux & Or V14":
+            if self.palette_name in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
                 self.owner._apply_v14_chroma(final)
+                if self.palette_name == "Pastel Bordeaux & Or V15":
+                    self.owner._apply_v15_low_signal_balance(final)
 
         self.adjusted_image.emit(final)
         self.accept()
@@ -312,7 +316,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -986,13 +990,15 @@ class PerfectPalettePicker(QWidget):
             g = np.clip(np.nan_to_num(g), 0, 1)
             b = np.clip(np.nan_to_num(b), 0, 1)
             rgb = np.stack([r, g, b], axis=2).astype(np.float32)
-            if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
+            if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
                 # Thumbnails use the same normalized colour correction
                 # as the final view rather than showing uncorrected V11.
                 rgb /= (float(rgb.max()) or 1.0)
                 self._apply_v12_selective_color(rgb)
-                if name == "Pastel Bordeaux & Or V14":
+                if name in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
                     self._apply_v14_chroma(rgb)
+                    if name == "Pastel Bordeaux & Or V15":
+                        self._apply_v15_low_signal_balance(rgb)
 
             # scale the thumbnail to EXACTLY the button icon size first
             pm = QPixmap.fromImage(self._to_qimage(rgb)).scaled(
@@ -1232,6 +1238,72 @@ class PerfectPalettePicker(QWidget):
             )
         return rgb
 
+    def _apply_v15_low_signal_balance(self, rgb: np.ndarray) -> np.ndarray:
+        """Quiet weak warm chroma; preserve luminance, blue OIII and stars.
+
+        Apply after V14's sigma=0.8 chroma stabilization. Compute a smooth
+        brightness mask from the ORIGINAL luminance, with halo overlap and a
+        short cache of pre-modification rows so neighboring stripes match a
+        full-image gaussian. Output is a convex mix between RGB and its own
+        luminance: no clipping, no luminance loss and bounded memory.
+        """
+        from scipy.ndimage import gaussian_filter
+
+        height, width = rgb.shape[:2]
+        if height == 0 or width == 0:
+            return rgb
+
+        halo = 6                  # 4 sigma at sigma=1.5
+        rows = max(halo, min(height, max(1, 400_000 // max(1, width))))
+        previous_tail = None
+        for y0 in range(0, height, rows):
+            y1 = min(height, y0 + rows)
+            top = max(0, y0 - halo)
+            bottom = min(height, y1 + halo)
+
+            source = rgb[top:bottom]
+            source_y = (
+                0.2126 * source[..., 0]
+                + 0.7152 * source[..., 1]
+                + 0.0722 * source[..., 2]
+            )
+            prefix = y0 - top
+            if prefix and previous_tail is not None:
+                source_y[:prefix] = previous_tail[-prefix:]
+            if y1 < height:
+                previous_tail = source_y[
+                    y1 - top - halo:y1 - top
+                ].copy()
+
+            smoothed_y = gaussian_filter(
+                source_y, sigma=1.5, mode="reflect"
+            )[prefix:prefix + y1 - y0]
+
+            tile = rgb[y0:y1]
+            current_y = (
+                0.2126 * tile[..., 0]
+                + 0.7152 * tile[..., 1]
+                + 0.0722 * tile[..., 2]
+            )
+            # R over B identifies warm H-alpha/SII regions. Blue OIII
+            # and mostly white stars are left alone.
+            warm = np.clip(
+                (tile[..., 0] - tile[..., 2] - 0.015) / 0.20,
+                0.0, 1.0,
+            )
+            warm = warm * warm * (3.0 - 2.0 * warm)
+            low = 1.0 - np.clip(
+                (smoothed_y - 0.16) / 0.27, 0.0, 1.0
+            )
+            low = low * low * (3.0 - 2.0 * low)
+            keep_chroma = 1.0 - 0.20 * warm * low
+            tile[:] = (
+                current_y[..., None]
+                + (tile - current_y[..., None])
+                * keep_chroma[..., None]
+            )
+        return rgb
+
     def _generate_for_palette(self, pal: str):
         ha, oo, si = self._prepared_channels()
         has_narrowband = sum(x is not None for x in (ha, oo, si))
@@ -1249,10 +1321,12 @@ class PerfectPalettePicker(QWidget):
 
         mx = float(rgb.max()) or 1.0
         self.final = (rgb / mx).astype(np.float32)
-        if pal in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
+        if pal in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
             self._apply_v12_selective_color(self.final)
-            if pal == "Pastel Bordeaux & Or V14":
+            if pal in ("Pastel Bordeaux & Or V14", "Pastel Bordeaux & Or V15"):
                 self._apply_v14_chroma(self.final)
+                if pal == "Pastel Bordeaux & Or V15":
+                    self._apply_v15_low_signal_balance(self.final)
 
         # Fit only when there wasn't an existing preview yet
         first = (self._base_pm is None)
@@ -1360,8 +1434,18 @@ class PerfectPalettePicker(QWidget):
         # V12 uses precisely V11's narrowband colour construction, followed
         # by two selective-colour passes *after* PPP's RGB normalization.
         # Do not bake the adjustments into the Ha/OIII/SII math.
-        is_v13 = (name in ("Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"))
-        if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
+        is_v15 = (name == "Pastel Bordeaux & Or V15")
+        is_v13 = (name in (
+            "Pastel Bordeaux & Or V13",
+            "Pastel Bordeaux & Or V14",
+            "Pastel Bordeaux & Or V15",
+        ))
+        if name in (
+            "Pastel Bordeaux & Or V12",
+            "Pastel Bordeaux & Or V13",
+            "Pastel Bordeaux & Or V14",
+            "Pastel Bordeaux & Or V15",
+        ):
             name = "Pastel Bordeaux & Or V11"
 
         # Record TRUE presence before substitution masks it, so Foraxx can
@@ -1533,7 +1617,7 @@ class PerfectPalettePicker(QWidget):
                     )
                     # V4's broad copper mask affected ~28.5% of WR134.
                     # Retain the spatial pattern at just 18% strength.
-                    copper_mask = 0.18 * (
+                    copper_mask = (0.25 if is_v15 else 0.18) * (
                         smoothstep((mask_H - 0.18) / 0.22)
                         * smoothstep((mask_S - 0.14) / 0.16)
                         * (1.0 - 0.55 * cool)
@@ -1545,7 +1629,7 @@ class PerfectPalettePicker(QWidget):
                         * smoothstep((mask_Y - 0.18) / 0.12)
                         * (1.0 - 0.90 * cool)
                     )
-                    gold_mask = gold_base ** 1.7
+                    gold_mask = gold_base ** (1.9 if is_v15 else 1.7)
 
                     tr = neutral[0] + warm * (burgundy[0] - neutral[0])
                     tg = neutral[1] + warm * (burgundy[1] - neutral[1])
@@ -1564,7 +1648,8 @@ class PerfectPalettePicker(QWidget):
                     # baked-orange appearance and leaves room for later curves.
                     Y2 = Y * (
                         0.82 + 0.04 * copper_mask
-                        + 0.55 * gold_mask + 0.13 * cool
+                        + (0.33 if is_v15 else 0.55) * gold_mask
+                        + 0.13 * cool
                     )
                     target_Y = np.maximum(
                         0.2126 * tr + 0.7152 * tg + 0.0722 * tb,
@@ -1785,8 +1870,10 @@ class PerfectPalettePicker(QWidget):
                             0.2126 * rr + 0.7152 * gg + 0.0722 * bb
                         )
                         k = (
-                            0.72 if name == "Pastel Bordeaux & Or V11"
-                            else 0.90
+                            0.56 if is_v15 else (
+                                0.72 if name == "Pastel Bordeaux & Or V11"
+                                else 0.90
+                            )
                         ) * gold
                         bright_ha = (
                             ha_diffuse * (1.0 - gold) * (1.0 - cool)
@@ -1803,7 +1890,8 @@ class PerfectPalettePicker(QWidget):
                             bright_ha *= 1.0 - 0.65 * background
                             # Tamer SII recolouring, gentler Ha compression.
                             tone = (
-                                1.0 - 0.045 * bright_ha + 0.16 * gold
+                                1.0 - 0.045 * bright_ha
+                                + (0.09 if is_v15 else 0.16) * gold
                             )
                             background_lift = 1.0 + 0.06 * background
                         else:
