@@ -176,8 +176,10 @@ class PaletteAdjustDialog(QDialog):
         if b is not None: img[...,2] = b
         m = float(img.max()) or 1.0
         img = np.clip(img/m, 0.0, 1.0)
-        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
+        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
             self.owner._apply_v12_selective_color(img)
+            if self.palette_name == "Pastel Bordeaux & Or V14":
+                self.owner._apply_v14_chroma(img)
 
         qimg = self.owner._to_qimage(img)
         self._adj_pixmap = QPixmap.fromImage(qimg)
@@ -238,8 +240,10 @@ class PaletteAdjustDialog(QDialog):
 
         m = float(final.max()) or 1.0
         final = np.clip(final/m, 0.0, 1.0)
-        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
+        if self.palette_name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
             self.owner._apply_v12_selective_color(final)
+            if self.palette_name == "Pastel Bordeaux & Or V14":
+                self.owner._apply_v14_chroma(final)
 
         self.adjusted_image.emit(final)
         self.accept()
@@ -308,7 +312,7 @@ class PerfectPalettePicker(QWidget):
         "OSH","OSS","SHH","SHO",
         "SOH","SOO",
         "Realistic1","Realistic2","Foraxx",
-        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Bordeaux & Bleu Acier",
+        "Dynamic Inverse", "Pastel Bordeaux & Or", "Pastel Bordeaux & Or V2", "Pastel Bordeaux & Or V3", "Pastel Bordeaux & Or V4", "Pastel Bordeaux & Or V5", "Pastel Bordeaux & Or V6", "Pastel Bordeaux & Or V7", "Pastel Bordeaux & Or V8", "Pastel Bordeaux & Or V9", "Pastel Bordeaux & Or V10", "Pastel Bordeaux & Or V11", "Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14", "Bordeaux & Bleu Acier",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
@@ -982,11 +986,13 @@ class PerfectPalettePicker(QWidget):
             g = np.clip(np.nan_to_num(g), 0, 1)
             b = np.clip(np.nan_to_num(b), 0, 1)
             rgb = np.stack([r, g, b], axis=2).astype(np.float32)
-            if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
+            if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
                 # Thumbnails use the same normalized colour correction
                 # as the final view rather than showing uncorrected V11.
                 rgb /= (float(rgb.max()) or 1.0)
                 self._apply_v12_selective_color(rgb)
+                if name == "Pastel Bordeaux & Or V14":
+                    self._apply_v14_chroma(rgb)
 
             # scale the thumbnail to EXACTLY the button icon size first
             pm = QPixmap.fromImage(self._to_qimage(rgb)).scaled(
@@ -1158,6 +1164,74 @@ class PerfectPalettePicker(QWidget):
                 tile[:] = adjusted
         return rgb
 
+    def _apply_v14_chroma(self, rgb: np.ndarray) -> np.ndarray:
+        """Reduce high-frequency chroma while preserving original luminance.
+
+        V14 applies this AFTER V13's colour construction and the two V12
+        selective-red passes. Only R-Y, G-Y and B-Y are smoothed (sigma=0.8).
+        Output is written stripe by stripe; cached ORIGINAL halo rows prevent
+        previously processed stripes contaminating subsequent ones.
+        Out-of-gamut colours are brought back by scaling chroma towards Y,
+        never by independently clipping the channels (which alters Y).
+        """
+        from scipy.ndimage import gaussian_filter
+
+        height, width = rgb.shape[:2]
+        if height == 0 or width == 0:
+            return rgb
+
+        sigma = 0.8
+        halo = 4
+        rows = max(halo, min(height, max(1, 400_000 // max(1, width))))
+        previous_tail = None
+
+        for y0 in range(0, height, rows):
+            y1 = min(height, y0 + rows)
+            top = max(0, y0 - halo)
+            bottom = min(height, y1 + halo)
+            original = rgb[top:bottom].copy()
+            prepend = y0 - top
+            if prepend and previous_tail is not None:
+                original[:prepend] = previous_tail[-prepend:]
+            if y1 < height:
+                previous_tail = original[y1 - halo - top:y1 - top].copy()
+
+            Y = (
+                0.2126 * original[..., 0]
+                + 0.7152 * original[..., 1]
+                + 0.0722 * original[..., 2]
+            )
+            center = slice(y0 - top, y1 - top)
+            target_Y = Y[center]
+            out = rgb[y0:y1]
+            for channel in range(3):
+                chroma = original[..., channel] - Y
+                smoothed = gaussian_filter(
+                    chroma, sigma=sigma, mode="reflect"
+                )
+                out[..., channel] = target_Y + smoothed[center]
+
+            # Independent RGB clipping would change native detail/luminance.
+            # Compress only chroma at rare out-of-gamut pixels instead.
+            lo = np.min(out, axis=2)
+            hi = np.max(out, axis=2)
+            low_gain = np.ones_like(target_Y)
+            high_gain = np.ones_like(target_Y)
+            np.divide(
+                target_Y, np.maximum(target_Y - lo, 1e-12),
+                out=low_gain, where=(lo < 0.0),
+            )
+            np.divide(
+                1.0 - target_Y, np.maximum(hi - target_Y, 1e-12),
+                out=high_gain, where=(hi > 1.0),
+            )
+            gain = np.minimum(1.0, np.minimum(low_gain, high_gain))
+            out[:] = (
+                target_Y[..., None]
+                + (out - target_Y[..., None]) * gain[..., None]
+            )
+        return rgb
+
     def _generate_for_palette(self, pal: str):
         ha, oo, si = self._prepared_channels()
         has_narrowband = sum(x is not None for x in (ha, oo, si))
@@ -1175,8 +1249,10 @@ class PerfectPalettePicker(QWidget):
 
         mx = float(rgb.max()) or 1.0
         self.final = (rgb / mx).astype(np.float32)
-        if pal in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
+        if pal in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
             self._apply_v12_selective_color(self.final)
+            if pal == "Pastel Bordeaux & Or V14":
+                self._apply_v14_chroma(self.final)
 
         # Fit only when there wasn't an existing preview yet
         first = (self._base_pm is None)
@@ -1284,8 +1360,8 @@ class PerfectPalettePicker(QWidget):
         # V12 uses precisely V11's narrowband colour construction, followed
         # by two selective-colour passes *after* PPP's RGB normalization.
         # Do not bake the adjustments into the Ha/OIII/SII math.
-        is_v13 = (name == "Pastel Bordeaux & Or V13")
-        if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13"):
+        is_v13 = (name in ("Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"))
+        if name in ("Pastel Bordeaux & Or V12", "Pastel Bordeaux & Or V13", "Pastel Bordeaux & Or V14"):
             name = "Pastel Bordeaux & Or V11"
 
         # Record TRUE presence before substitution masks it, so Foraxx can
